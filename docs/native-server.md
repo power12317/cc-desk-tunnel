@@ -12,11 +12,11 @@ Windows/macOS/Linux 桌面和 ccdt 客户端继续连接以上服务；Windows �
 
 ## 项目内的部署目录
 
-macOS 原生部署将本服务的配置、访问密钥、证书和应用数据放在目标机器项目内的 `runtime/.local/`：
+macOS（Mac mini）和 Linux 原生部署将本服务的配置、访问密钥、证书和应用数据放在目标机器项目内的 `runtime/local/`：
 
 ```text
 cc-desk-tunnel/
-  runtime/.local/
+  runtime/local/
     service.env
     access-keys.json
     tls/
@@ -25,17 +25,17 @@ cc-desk-tunnel/
     state/
 ```
 
-服务端继续使用上游已有的 `--env-file`、`PROXY_DATA_DIR`、`PROXY_TLS_CERT/KEY` 配置机制。上述位置通过配置指定，不改变上游默认值或 Docker/Compose 部署布局。现有 `.gitignore` 的 `.local/` 规则已覆盖 `runtime/.local/`，配置、密钥、证书和数据不会进入 Git。
+服务端继续使用上游已有的 `--env-file`、`PROXY_DATA_DIR`、`PROXY_TLS_CERT/KEY` 配置机制。上述位置通过配置指定，不改变上游默认值或 Docker/Compose 部署布局。`.gitignore` 已忽略 `runtime/local/`，配置、密钥、证书和数据不会进入 Git。
 
-以下操作均在**目标 Mac 的项目根目录**执行。不要使用开发机器的绝对路径或 Node 安装路径。
+以下操作均在**目标 Mac mini 或 Linux 机器的项目根目录**执行，使用目标机器现有的 Node 和 Claude Code。
 
 ## 官方配置文件与 Node.js
 
 官方原版已使用 `service.env` 配置文件，服务启动时由 Node 的 `--env-file` 参数读取；Docker 入口和 Linux 原生部署脚本均使用这种方式。无需手动 `export`、`source` 或修改系统/终端的环境设置。文件内容只在启动的服务进程中由 `process.env` 读取；这仍然是环境变量格式的配置文件，不是 JSON。官方没有服务级 JSON/YAML 解析入口，也没有 `--port`、`--token`、`--config` 等应用参数。[配置实现](../apps/server/src/config.ts)与[官方沿用的 Docker 启动方式](../deploy/docker/entrypoint.sh)可供核对。
 
-沿用目标 Mac 当前安装的 Node.js 和现有 Claude Code，不安装或切换 Node，也不改变 PATH。官方仓库声明的 Node 范围为 `>=24 <25`，这项声明来自上游；本次在 macOS arm64 上用现有代码验证了 Node 26.13.0：服务端依赖安装成功，43 项相关离线测试通过。上游声明可能使 npm 输出 `EBADENGINE` 警告，本次安装实际退出码为 0；不据此要求更换目标机器的 Node，也不改写官方声明或宣称所有历史版本均已验证。
+沿用目标 Mac mini 或 Linux 机器当前安装的 Node.js 和现有 Claude Code，不安装或切换 Node，也不改变 PATH。官方仓库声明的 Node 范围为 `>=24 <25`，这项声明来自上游；本次在 macOS arm64 上用现有代码验证了 Node 26.13.0：服务端依赖安装成功，43 项相关离线测试通过。上游声明可能使 npm 输出 `EBADENGINE` 警告，本次安装实际退出码为 0；不据此要求更换目标机器的 Node，也不改写官方声明或宣称所有历史版本均已验证。
 
-以下操作使用目标机器已经能正常运行 Claude 的 macOS 登录用户。不重新登录、导出/复制凭据或改变 HOME/CLAUDE_CONFIG_DIR、代理和网络出口。
+以下操作使用目标机器已经能正常运行 Claude 的同一个用户。不重新登录、导出/复制凭据或改变 HOME/CLAUDE_CONFIG_DIR、代理和网络出口。
 
 只运行服务端、不启用 Web 时，安装服务端依赖即可：
 
@@ -47,42 +47,42 @@ npm ci --omit=dev \
 
 ## 首次配置
 
-以下命令只创建缺失文件。已有部署先按下文迁移，保留原空间 ID、token、证书及历史数据。
+以下命令只创建缺失文件，保留已有配置、空间 ID、token、证书及历史数据。
 
 ```sh
-mkdir -p runtime/.local/tls runtime/.local/state
-chmod 700 runtime/.local runtime/.local/tls runtime/.local/state
+mkdir -p runtime/local/tls runtime/local/state
+chmod 700 runtime/local runtime/local/tls runtime/local/state
 
 (
   umask 077
-  if [ ! -f runtime/.local/tls/server.key ]; then
-    openssl genrsa -out runtime/.local/tls/server.key 3072
+  if [ ! -f runtime/local/tls/server.key ]; then
+    openssl genrsa -out runtime/local/tls/server.key 3072
   fi
-  if [ ! -f runtime/.local/tls/server.crt ]; then
+  if [ ! -f runtime/local/tls/server.crt ]; then
     openssl req -new -x509 -sha256 -days 365 \
-      -key runtime/.local/tls/server.key \
-      -out runtime/.local/tls/server.crt \
+      -key runtime/local/tls/server.key \
+      -out runtime/local/tls/server.crt \
       -subj "/CN=cc-desk-tunnel.local"
   fi
-  if [ ! -f runtime/.local/access-keys.json ]; then
-    cat > runtime/.local/access-keys.json <<EOF
+  if [ ! -f runtime/local/access-keys.json ]; then
+    cat > runtime/local/access-keys.json <<EOF
 [
   {"id":"team-a","token":"$(openssl rand -hex 32)"},
   {"id":"team-b","token":"$(openssl rand -hex 32)"}
 ]
 EOF
   fi
-  if [ ! -f runtime/.local/service.env ]; then
-    cat > runtime/.local/service.env <<EOF
+  if [ ! -f runtime/local/service.env ]; then
+    cat > runtime/local/service.env <<EOF
 PROXY_ADAPTER=claude-code
 PROXY_HOST=0.0.0.0
 PROXY_PORT=8787
-PROXY_DATA_DIR=runtime/.local/state
-CLAUDE_PATH="$(command -v claude)"
-PROXY_ACCESS_KEYS_FILE=runtime/.local/access-keys.json
+PROXY_DATA_DIR=runtime/local/state
+CLAUDE_PATH=/Users/mac/.local/bin/claude
+PROXY_ACCESS_KEYS_FILE=runtime/local/access-keys.json
 PROXY_TLS_MODE=direct
-PROXY_TLS_CERT=runtime/.local/tls/server.crt
-PROXY_TLS_KEY=runtime/.local/tls/server.key
+PROXY_TLS_CERT=runtime/local/tls/server.crt
+PROXY_TLS_KEY=runtime/local/tls/server.key
 PROXY_RELEASE_REPO=none
 PROXY_WEB_ENABLED=0
 EOF
@@ -90,30 +90,37 @@ EOF
 )
 ```
 
-`0.0.0.0` 接受局域网连接；仅供本机使用时填 `127.0.0.1`。相对路径均相对于启动时的项目根目录。两个 token 由目标 Mac 随机生成；同一空间的设备使用同一 token，不同空间的设备使用不同 token。密钥轮换与旧数据归属见[访问空间](access-spaces.md)。
+Mac mini 的示例默认 Claude 路径为 `/Users/mac/.local/bin/claude`。Linux 部署时，用 `command -v claude` 查看目标机器已有的可执行文件路径，并将结果填写到 `runtime/local/service.env` 的 `CLAUDE_PATH`；若实际安装路径不同，Mac 同样修改此配置项。这里只编辑配置文件，不改变 PATH，也不安装或替换现有 Claude Code。
 
-已有部署迁移时先停服并备份，将原配置、密钥文件、完整证书对和整个应用数据目录复制到对应位置，再将配置中的数据、密钥文件、证书路径改成上述 `runtime/.local/...`。保留原 `CLAUDE_PATH`、token、空间 ID 和其他设置。验证数据与连接正常后再清理旧部署文件；不要同时启动两个进程读写同一数据目录。
+`0.0.0.0` 接受局域网连接；仅供本机使用时填 `127.0.0.1`。相对路径均相对于启动时的项目根目录。两个 token 由目标机器随机生成；同一空间的设备使用同一 token，不同空间的设备使用不同 token。密钥轮换与旧数据归属见[访问空间](access-spaces.md)。
 
 ## 启动与连接
 
-在目标 Mac 的项目根目录，直接使用现有 `node` 读取配置文件启动：
+在目标 Mac mini 或 Linux 机器的项目根目录，直接使用现有 `node` 读取配置文件启动：
 
 ```sh
-caffeinate -i node --env-file=runtime/.local/service.env apps/server/src/main.ts
+node --env-file=runtime/local/service.env apps/server/src/main.ts
 ```
 
-`caffeinate` 仅在服务运行期间防止空闲休眠。保持终端打开，Ctrl-C 停止本次服务。重新启动直接使用上述命令，不重复初始化。
-
-客户端使用官方 `0.3.9`，填写 `wss://目标Mac的局域网IP:8787/ws`。在目标 Mac 上读取实际证书指纹和访问密钥：
+Mac mini 可使用系统自带的 `caffeinate`，在服务运行期间防止空闲休眠：
 
 ```sh
-openssl x509 -in runtime/.local/tls/server.crt -noout -fingerprint -sha256
-open -a TextEdit runtime/.local/access-keys.json
+caffeinate -i node --env-file=runtime/local/service.env apps/server/src/main.ts
 ```
+
+保持终端打开，Ctrl-C 停止本次服务。重新启动直接使用对应命令，不重复初始化。
+
+客户端使用官方 `0.3.9`，填写 `wss://目标服务器的局域网IP:8787/ws`。在目标服务器上读取实际证书指纹：
+
+```sh
+openssl x509 -in runtime/local/tls/server.crt -noout -fingerprint -sha256
+```
+
+访问密钥保存在 `runtime/local/access-keys.json`。Mac 可以用 `open -a TextEdit runtime/local/access-keys.json` 打开；Linux 使用目标机器上的文本编辑器查看或修改。
 
 自签证书有效期一年，客户端填写输出中 `=` 后的 SHA256 指纹。证书属于本服务的 TLS 身份，与 Claude 登录和 SSH 临时密钥不同；其他入口方式见[部署说明](deployment.md)。
 
-停服后备份或清理本服务的部署文件时，统一处理 `runtime/.local/`，其中包含访问密钥、证书私钥及会话数据。
+停服后备份或清理本服务的部署文件时，统一处理 `runtime/local/`，其中包含访问密钥、证书私钥及会话数据。
 
 服务不改 HOME/CLAUDE_CONFIG_DIR，不读取或导出钥匙串凭据，不复用或接管已经打开的 CLI 进程。官方 SDK 用 `pathToClaudeCodeExecutable` 创建独立正常会话；PTY 也使用同一路径。项目的 SQLite、workspace、SSH 和运行数据在 `PROXY_DATA_DIR`，CLI 的原生上下文仍由官方 CLI 放在现有用户环境。
 

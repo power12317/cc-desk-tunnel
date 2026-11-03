@@ -1,5 +1,6 @@
 # 本地凭据、运行配置和会话数据
 .local/
+/runtime/local/
 .env
 .env.*
 !.env.example
