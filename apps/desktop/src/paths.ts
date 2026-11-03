@@ -11,7 +11,13 @@ export const isInside = (path: string, roots: string[]) =>
   roots.some((root) =>
     pathKey(path).startsWith(`${pathKey(root)}${isWindowsPath(root) ? '\\' : '/'}`),
   );
-export { isNewerVersion as isNewer } from '@cc-desk-tunnel/protocol';
+// Dotted numeric versions, e.g. 0.10.1 is newer than 0.9.0.
+export function isNewer(candidate: string, current: string) {
+  const [a, b] = [candidate, current].map((version) => version.split('.').map(Number));
+  for (let index = 0; index < 3; index++)
+    if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) > (b[index] || 0);
+  return false;
+}
 // How long ago, in the fewest words that still tell recent from old.
 export function ago(time: number) {
   const minutes = Math.floor((Date.now() - time) / 60_000);

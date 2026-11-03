@@ -580,37 +580,3 @@ test('a remote connection that breaks is made again through a new bridge, and on
   assert.equal(sockets[4].sent.at(-1).type, 'leave');
   assert.equal(bridges, 5);
 });
-
-test('changing credentials or server clears history, pending output, devices, native state and cached replies', (t) => {
-  const { client, socket, sessions, snapshot } = fixture(t);
-  const id = sessions[0].id;
-  client.select(id);
-  snapshot(sessions[0], [event(id, 1, 'private A history')]);
-  client.update({
-    devices: [{ id: randomUUID(), name: 'A1', ready: true }],
-    account: { loggedIn: true, email: 'A-private@example.invalid' },
-    progress: { [id]: { task: { type: 'native.progress', taskId: 'task' } } },
-  });
-  client.results.set(randomUUID(), { type: 'settings.state', values: { private: 'A' } });
-  socket.message({
-    type: 'session.fragment',
-    sessionId: id,
-    runId: randomUUID(),
-    payload: { type: 'text.delta', messageId: randomUUID(), text: 'unfinished A' },
-  });
-  client.connect('ws://127.0.0.1:2/ws', 'B-token-with-enough-characters', {
-    id: randomUUID(),
-    name: 'B1',
-  });
-  assert.deepEqual(client.state.sessions, []);
-  assert.deepEqual(client.state.events, {});
-  assert.deepEqual(client.state.live, {});
-  assert.deepEqual(client.state.devices, []);
-  assert.deepEqual(client.state.progress, {});
-  assert.equal(client.state.account, null);
-  assert.equal(client.results.size, 0);
-  assert.equal(client.streamEvents.length, 0);
-  assert.equal(client.cacheOrder.length, 0);
-  socket.message({ type: 'session.updated', session: sessions[0] });
-  assert.deepEqual(client.state.sessions, []);
-});

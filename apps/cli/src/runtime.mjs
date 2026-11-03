@@ -44,4 +44,4 @@ export const packageName = (release, system = `${process.platform}-${process.arc
 };
 
 export const releasePage = (release) =>
-  `https://github.com/power12317/cc-desk-tunnel/releases/tag/v${release}`;
+  `https://github.com/sun168567/cc-desk-tunnel/releases/tag/v${release}`;

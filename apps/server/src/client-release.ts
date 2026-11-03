@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { isNewerVersion } from '@cc-desk-tunnel/protocol';
 
 export type ClientRelease = { version: string; size: number; sha256: string; path: string };
-const installer = /^CC-Desk-Tunnel-Setup-(\d+\.\d+\.\d+(?:-mod)?)-x64\.exe$/;
+const installer = /^CC-Desk-Tunnel-Setup-(\d+)\.(\d+)\.(\d+)-x64\.exe$/;
 
 // The Windows installers in the data directory, placed by an administrator or fetched with a release. Connected
 // clients are told the newest one's version and hash, and may download it with the service token. Only the
@@ -38,10 +37,10 @@ export class ClientReleases {
       names = [];
     }
     const installers = names
-      .map((name) => ({ name, version: installer.exec(name)?.[1] }))
-      .filter((item): item is { name: string; version: string } => !!item.version)
-      .sort((a, b) =>
-        isNewerVersion(a.version, b.version) ? -1 : isNewerVersion(b.version, a.version) ? 1 : 0,
+      .map((name) => ({ name, parts: installer.exec(name)?.slice(1).map(Number) }))
+      .filter((item): item is { name: string; parts: number[] } => !!item.parts)
+      .sort(
+        (a, b) => b.parts[0] - a.parts[0] || b.parts[1] - a.parts[1] || b.parts[2] - a.parts[2],
       );
     for (const old of installers.slice(KEPT))
       rmSync(join(this.directory, old.name), { force: true });
@@ -58,7 +57,7 @@ export class ClientReleases {
     const hash = createHash('sha256');
     for await (const chunk of createReadStream(path)) hash.update(chunk);
     this.current = {
-      version: newest.version,
+      version: newest.parts.join('.'),
       size: stat.size,
       sha256: hash.digest('hex'),
       path,

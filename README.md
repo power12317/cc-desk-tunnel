@@ -1,6 +1,6 @@
 # CC Desk Tunnel（CC 桌面隧道）
 
-> **mod 改版**：本 fork 发布 `X.Y.Z-mod` 版本，安装器、服务端与 amd64/arm64 镜像均来自 `power12317/cc-desk-tunnel`。基于上游项目改造，新增访问空间与 macOS 原生服务；原有 Docker 部署继续支持。
+> 服务端版本与官方最新版保持一致，当前为 `0.3.9`（协议 22）；直接使用官方客户端。此仓库仅调整服务端，支持访问密钥空间隔离和 macOS 原生运行，并保留 Linux Docker/Compose 部署。服务端与镜像发布于 `power12317/cc-desk-tunnel`。
 
 **简体中文** | [English](README.en.md)
 

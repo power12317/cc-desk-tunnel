@@ -152,41 +152,20 @@ function read(saved: any = shared('prefs') ?? stored()): Prefs {
   }
 }
 
-const projectFields = [
-  'pinnedSessions',
-  'pinnedProjects',
-  'collapsedProjects',
-  'collapsedElsewhere',
-  'projectNames',
-] as const;
-let scope: string | null = null;
-let current = {
-  ...read(),
-  ...Object.fromEntries(projectFields.map((key) => [key, defaults[key]])),
-};
+let current = read();
 shareOnce('prefs', current);
 const listeners = new Set<() => void>();
 export const getPrefs = () => current;
 function keep(next: Prefs) {
   current = next;
-  localStorage.setItem(storageKey, JSON.stringify({ ...current, ...scoped(defaults) }));
+  localStorage.setItem(storageKey, JSON.stringify(current));
   for (const listener of listeners) listener();
-}
-const scoped = (value: Prefs) => Object.fromEntries(projectFields.map((key) => [key, value[key]]));
-export function setPrefsScope(next: string | null) {
-  scope = next;
-  let saved = {};
-  try {
-    saved = scope ? JSON.parse(localStorage.getItem(`proxy-project-prefs:${scope}`) ?? '{}') : {};
-  } catch {}
-  keep({ ...current, ...scoped(read(saved)) });
 }
 export function setPrefs(change: (prefs: Prefs) => Prefs) {
   keep(change(current));
-  if (scope) localStorage.setItem(`proxy-project-prefs:${scope}`, JSON.stringify(scoped(current)));
-  saveShared('prefs', { ...current, ...scoped(defaults) });
+  saveShared('prefs', current);
 }
-onSharedChange('prefs', (value) => keep({ ...read(value), ...scoped(current) }));
+onSharedChange('prefs', (value) => keep(read(value)));
 export function onPrefs(listener: () => void) {
   listeners.add(listener);
   return () => {

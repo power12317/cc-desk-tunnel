@@ -287,7 +287,9 @@ export function createProxyServer(options: ServerOptions) {
     if (!peer.space) throw new DomainError('unauthorized', '请先认证。');
     return peer.space;
   };
-  const seatKey = (space: string, device: string) => `${space}.${device}`;
+  // Keep the original directory layout for the legacy space; other spaces have disjoint names.
+  const seatKey = (space: string, device: string) =>
+    space === 'default' ? device : `${space}.${device}`;
   const originOf = (request: IncomingMessage) =>
     `${options.tls || options.reverseProxy ? 'https' : 'http'}://${request.headers.host}`;
   // Behind the reverse proxy every socket comes from the proxy itself; it passes the client on in X-Real-IP.
@@ -1598,8 +1600,6 @@ export function createProxyServer(options: ServerOptions) {
       peer.authenticated = true;
       send(peer, {
         type: 'ready',
-        spaceId: spaceOf(peer),
-        remoteAdministration: !!options.allowRemoteAdministration,
         protocolVersion: PROTOCOL_VERSION,
         connectionId: peer.id,
         adapter,
@@ -1654,8 +1654,6 @@ export function createProxyServer(options: ServerOptions) {
     peer.name = auth.data.deviceName;
     send(peer, {
       type: 'ready',
-      spaceId: spaceOf(peer),
-      remoteAdministration: !!options.allowRemoteAdministration,
       protocolVersion: PROTOCOL_VERSION,
       connectionId: peer.id,
       adapter,
@@ -1710,12 +1708,9 @@ export function createProxyServer(options: ServerOptions) {
       peer.socket.close(TUNNEL_CLOSE.unknown, 'Unknown tunnel');
       return false;
     }
-    const space = attach.data.token
-      ? authorized(attach.data.token)
-      : spaces.ids.size === 1
-        ? owner?.space
-        : undefined;
-    if (space !== owner?.space || !tunnel.matches(attach.data.secret)) {
+    // Official clients authenticate each data channel with the random secret of its control connection.
+    // The selected owner already carries its access space; device IDs never select a tunnel here.
+    if (!tunnel.matches(attach.data.secret)) {
       refuse(peer.address, 'tunnel secret');
       peer.socket.close(TUNNEL_CLOSE.refused, 'Unauthorized');
       return false;

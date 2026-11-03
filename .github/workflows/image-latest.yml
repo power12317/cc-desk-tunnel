@@ -28,7 +28,7 @@ jobs:
           # Resolve the actual Latest release, including when a prerelease is promoted by hand.
           tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
           version="${tag#v}"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-mod)?$ ]]
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           if ! docker buildx imagetools inspect "$image:$version" > /dev/null 2>&1; then
             echo "Release $version has no image; latest stays where it is."

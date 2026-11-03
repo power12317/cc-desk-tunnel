@@ -3,20 +3,20 @@ import { randomUUID, X509Certificate } from 'node:crypto';
 import { once } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { transferPaths, bashDoubleQuoted } from '../../server/src/device-terms.ts';
+import { transferPaths, bashDoubleQuoted } from '../src/device-terms.ts';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
-import { PROTOCOL_VERSION } from '@cc-desk-tunnel/protocol';
-import { createProxyServer } from '../../server/src/server.ts';
-import { defaultCertificate } from '../../server/test/fixtures/web-certificates.ts';
-import { openProxyBridge } from '../electron/proxy-bridge.mjs';
+import { PROTOCOL_VERSION, serverMessageSchema } from '@cc-desk-tunnel/protocol';
+import { createProxyServer } from '../src/server.ts';
+import { defaultCertificate } from './fixtures/web-certificates.ts';
+import { openProxyBridge } from '../../desktop/electron/proxy-bridge.mjs';
 
 test(
-  'offline SDK + real loopback SSH: A2 sends to A1, reconnect preserves its door, B cannot reroute the run',
+  'official 0.3.9 bridge + protocol 22 + offline SDK + real SSH: shared-space routing, isolation and reconnect',
   { skip: process.platform === 'win32', timeout: 60000 },
   async (t) => {
     const directory = mkdtempSync('/tmp/cc-native-spaces-');
@@ -33,9 +33,7 @@ test(
       tls: { cert: Buffer.from(defaultCertificate.cert), key: Buffer.from(defaultCertificate.key) },
       tunnel: {},
       claude: {
-        executable: fileURLToPath(
-          new URL('../../server/test/fixtures/offline-cli.mjs', import.meta.url),
-        ),
+        executable: fileURLToPath(new URL('./fixtures/offline-cli.mjs', import.meta.url)),
       },
       graceMs: 5000,
     });
@@ -59,7 +57,10 @@ test(
       const socket = new WebSocket(bridge.url);
       sockets.push(socket);
       const messages = [];
-      socket.on('message', (raw) => messages.push(JSON.parse(raw.toString())));
+      socket.on('message', (raw) => {
+        const message = serverMessageSchema.parse(JSON.parse(raw.toString()));
+        messages.push(message);
+      });
       await once(socket, 'open');
       socket.send(
         JSON.stringify({
@@ -80,6 +81,8 @@ test(
       }
       const ready = await next((m) => m.type === 'ready');
       assert.equal(ready.type, 'ready');
+      assert.equal(PROTOCOL_VERSION, 22);
+      assert.equal(ready.version, '0.3.9');
       async function request(command) {
         const requestId = randomUUID();
         socket.send(JSON.stringify({ ...command, requestId }));

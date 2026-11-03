@@ -1,6 +1,6 @@
 # CC Desk Tunnel
 
-> **Modified edition (`mod`)**: this fork publishes `X.Y.Z-mod` clients, server bundles and amd64/arm64 images from `power12317/cc-desk-tunnel`, adding access-key spaces and native macOS hosting while keeping Docker deployment.
+> The server follows the latest official version, currently `0.3.9` with protocol 22, and uses unmodified official clients. Server changes add access-key spaces and native macOS hosting while retaining Linux Docker/Compose deployment. Server bundles and images are published from `power12317/cc-desk-tunnel`.
 
 [简体中文](README.md) | **English**
 

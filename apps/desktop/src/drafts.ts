@@ -27,7 +27,7 @@ function store(drafts: Drafts) {
   else localStorage.setItem(storageKey, JSON.stringify(drafts));
 }
 
-export function useDrafts(scope: string | null) {
+export function useDrafts() {
   const [drafts, setDrafts] = useState<Drafts>({});
   const latest = useRef(drafts);
   const loaded = useRef(false);
@@ -65,17 +65,8 @@ export function useDrafts(scope: string | null) {
     };
   }, [change, flush]);
   const setDraft = useCallback(
-    (sessionId: string, text: string) => {
-      if (scope) change((current) => ({ ...current, [`${scope}\0${sessionId}`]: text }));
-    },
-    [change, scope],
+    (sessionId: string, text: string) => change((current) => ({ ...current, [sessionId]: text })),
+    [change],
   );
-  const visible = scope
-    ? Object.fromEntries(
-        Object.entries(drafts)
-          .filter(([key]) => key.startsWith(`${scope}\0`))
-          .map(([key, value]) => [key.slice(scope.length + 1), value]),
-      )
-    : {};
-  return [visible, setDraft] as const;
+  return [drafts, setDraft] as const;
 }

@@ -149,16 +149,6 @@ deployment 1.2.3 old:1
 if manage upgrade > /dev/null 2>&1; then echo 'A tampered archive was accepted.' >&2; exit 1; fi
 grep -q '"version": "1.2.3"' "$DEPLOYED/apps/desktop/package.json"
 
-
-# A fork version is used unchanged by the image, archive and explicit-version upgrade paths.
-release 1.4.0-mod
-deployment 1.3.0-mod
-manage pull
-test "$(image)" = ghcr.io/power12317/cc-desk-tunnel:1.3.0-mod
-CC_DESK_TUNNEL_VERSION=1.4.0-mod manage upgrade > /dev/null
-test "$(image)" = ghcr.io/power12317/cc-desk-tunnel:1.4.0-mod
-printf '%s\n' 'PASS: mod image tags and explicit mod archive upgrades.'
-
 # The one-line installer, as root on Linux: a first install, then the command it leaves, then an upgrade.
 if [[ "$(uname -s)" != Linux ]]; then
   echo 'PASS: image choice, failures, release upgrade. SKIP: the installer, which needs Linux.'

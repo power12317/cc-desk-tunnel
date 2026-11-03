@@ -93,7 +93,7 @@ build_image() {
     -f "$ROOT/deploy/docker/compose.yaml" build --pull
   save_image cc-desk-tunnel:local
 }
-version_of() { sed -n 's/^ *"version": "\([0-9][0-9.]*\(-mod\)\{0,1\}\)",\{0,1\}$/\1/p' "$ROOT/apps/desktop/package.json" 2>/dev/null | head -n 1; }
+version_of() { sed -n 's/^ *"version": "\([0-9.]*\)",\{0,1\}$/\1/p' "$ROOT/apps/desktop/package.json" 2>/dev/null | head -n 1; }
 save_image() {
   local temp
   temp="$(mktemp "$CONFIG.XXXXXX")"
@@ -105,7 +105,7 @@ save_image() {
 pull_image() {
   local version image
   version="$(version_of)"
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-mod)?$ ]] || fail "No program version in $ROOT/apps/desktop/package.json."
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "No program version in $ROOT/apps/desktop/package.json."
   image="${CC_DESK_TUNNEL_IMAGE:-ghcr.io/power12317/cc-desk-tunnel}:$version"
   echo "拉取镜像 $image …"
   docker pull "$image" || return
@@ -129,7 +129,7 @@ fetch_release() {
   local releases=https://github.com/power12317/cc-desk-tunnel/releases name version current
   local listed="$releases/latest/download"
   if [[ -n "${CC_DESK_TUNNEL_VERSION:-}" ]]; then
-    [[ "$CC_DESK_TUNNEL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-mod)?$ ]] || fail "CC_DESK_TUNNEL_VERSION must be X.Y.Z or X.Y.Z-mod."
+    [[ "$CC_DESK_TUNNEL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "CC_DESK_TUNNEL_VERSION must be X.Y.Z."
     listed="$releases/download/v$CC_DESK_TUNNEL_VERSION"
   fi
   FETCHED="$(mktemp -d)"
@@ -139,7 +139,7 @@ fetch_release() {
     echo "读不到发布页（检查这台机器能否访问 github.com），不下载新版本，用当前的 $(version_of) 继续。"
     return
   fi
-  name="$(awk '$2 ~ /^cc-desk-tunnel-server-[0-9]+\.[0-9]+\.[0-9]+(-mod)?\.tar\.gz$/ { print $2 }' "$FETCHED/SHA256SUMS" | head -n 1)"
+  name="$(awk '$2 ~ /^cc-desk-tunnel-server-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz$/ { print $2 }' "$FETCHED/SHA256SUMS" | head -n 1)"
   [[ -n "$name" ]] || fail "The release has no server archive."
   version="${name#cc-desk-tunnel-server-}"; version="${version%.tar.gz}"
   # Nothing newer, or the version asked for is here already. This is also how a manage.sh from before the images hands
@@ -372,7 +372,7 @@ case "$command" in
     summary ;;
   summary) summary ;;
   client)
-    [[ $# = 1 && -f "$1" && "$(basename -- "$1")" =~ ^CC-Desk-Tunnel-Setup-[0-9]+\.[0-9]+\.[0-9]+(-mod)?-x64\.exe$ ]] \
+    [[ $# = 1 && -f "$1" && "$(basename -- "$1")" =~ ^CC-Desk-Tunnel-Setup-[0-9]+\.[0-9]+\.[0-9]+-x64\.exe$ ]] \
       || fail "Specify the installer as built: CC-Desk-Tunnel-Setup-X.Y.Z-x64.exe"
     mkdir -p "$DATA_DIR/state/client"
     install -m 644 "$1" "$DATA_DIR/state/client/"

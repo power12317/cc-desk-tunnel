@@ -140,27 +140,3 @@ test('nothing is kept of a file that is not the announced one, of a download tha
     /版本号不正确/,
   );
 });
-
-test('mod installer downloads use the exact suffixed release and asset names', async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'cc-mod-download-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const version = '0.3.9-mod',
-    file = `CC-Desk-Tunnel-Setup-${version}-x64.exe`,
-    urls = [];
-  const get = async (url) => {
-    urls.push(url);
-    return url.endsWith('/release.json')
-      ? new Response(
-          JSON.stringify({ version, files: [{ name: file, size: installer.length, sha256 }] }),
-        )
-      : new Response(installer);
-  };
-  const result = await downloadRelease(get, version, directory);
-  assert.equal(result, join(directory, file));
-  assert.deepEqual(readFileSync(result), installer);
-  assert.ok(
-    urls.every((url) =>
-      url.startsWith(`https://github.com/power12317/cc-desk-tunnel/releases/download/v${version}/`),
-    ),
-  );
-});

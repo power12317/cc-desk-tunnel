@@ -245,7 +245,7 @@ export default function WebAccessSettings({
                 <Switch
                   label="启用 Web 访问"
                   checked={values.enabled}
-                  disabled={busy || !client.state.remoteAdministration}
+                  disabled={busy}
                   onChange={(enabled) => void toggle(enabled)}
                 />
               </Row>
@@ -280,11 +280,7 @@ export default function WebAccessSettings({
                   </div>
                 </Row>
                 <Row title="访问设置" detail={values.domain || '使用部署地址'}>
-                  <button
-                    className="button"
-                    disabled={busy || !client.state.remoteAdministration}
-                    onClick={() => setDialog('access')}
-                  >
+                  <button className="button" disabled={busy} onClick={() => setDialog('access')}>
                     设置
                   </button>
                 </Row>
@@ -296,7 +292,7 @@ export default function WebAccessSettings({
                 >
                   <button
                     className="button"
-                    disabled={busy || !client.state.remoteAdministration}
+                    disabled={busy}
                     onClick={() => setDialog(values.totpEnabled ? 'disable' : 'totp')}
                   >
                     {values.totpEnabled ? '关闭' : '设置'}
@@ -361,7 +357,7 @@ export default function WebAccessSettings({
                     {values.enabled && !['external', 'unavailable'].includes(certificate.mode) && (
                       <button
                         className="button"
-                        disabled={busy || !values.domain || !client.state.remoteAdministration}
+                        disabled={busy || !values.domain}
                         title={values.domain ? undefined : '请先设置访问域名'}
                         onClick={() => setDialog('certificate')}
                       >

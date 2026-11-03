@@ -2,8 +2,6 @@
 
 当前版本见 `src/index.ts` 的 `PROTOCOL_VERSION`，导出 TypeScript 类型和 Zod 运行时校验。两端需一起升级。服务适配原生公开事件，不复制 CLI 私有控制协议；该部分由官方 SDK 管理。
 
-本 fork 从 `0.3.9-mod` 使用协议 23；服务端和客户端一起升级。版本号支持 `X.Y.Z-mod`，`ready.spaceId` 标识认证空间，执行通道在多空间服务上同时验证访问密钥和通道秘密。
-
 ## 连接与消息
 
 - WebSocket `/ws` 建立后，首帧必须是 `auth`：协议版本、代理服务 token、设备名称。5 秒内不认证则关闭；token 不进入会话事件。服务回传 `ready`、连接 ID 和会话目录。

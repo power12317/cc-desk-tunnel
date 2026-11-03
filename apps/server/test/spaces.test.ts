@@ -377,11 +377,12 @@ test('legacy data is assigned once; rotation retains IDs and history, missing ow
   rmSync(legacyDir, { recursive: true, force: true });
 });
 
-test('tunnel attach requires the owning space even with a stolen live secret; device seats never cross keys', async (t) => {
+test('official tunnel frames bind the secret to its control connection; device seats never cross keys', async (t) => {
   const f = await fixture(t, { tunnel: { probe: async () => {}, pairMs: 5000 } });
   const a1 = await f.client(a, randomUUID(), true),
     b1 = await f.client(b, a1.id, true);
   const offer = await a1.next('tunnel.offer');
+  const otherOffer = await b1.next('tunnel.offer');
   for (const client of [a1, b1]) {
     client.send({
       type: 'tunnel.credentials',
@@ -403,25 +404,30 @@ test('tunnel attach requires the owning space even with a stolen live secret; de
   const tcp = tcpConnect(Number(/Port (\d+)/.exec(config)![1]), '127.0.0.1');
   t.after(() => tcp.destroy());
   const open = await a1.next('tunnel.open');
-  async function attach(token?: string) {
+  async function attach(secret = offer.secret, connectionId = a1.ready.connectionId) {
     const socket = new WebSocket(f.url.replace('http', 'ws') + '/ws');
     f.sockets.push(socket);
     await once(socket, 'open');
     socket.send(
       JSON.stringify({
         type: 'tunnel.attach',
-        connectionId: a1.ready.connectionId,
+        connectionId,
         channelId: open.channelId,
-        secret: offer.secret,
-        ...(token ? { token } : {}),
+        secret,
       }),
     );
     return socket;
   }
-  for (const token of [b, undefined])
-    assert.equal((await once(await attach(token), 'close'))[0], TUNNEL_CLOSE.refused);
+  for (const [secret, connectionId] of [
+    [otherOffer.secret, a1.ready.connectionId],
+    [offer.secret, b1.ready.connectionId],
+  ])
+    assert.equal(
+      (await once(await attach(secret, connectionId), 'close'))[0],
+      TUNNEL_CLOSE.refused,
+    );
   const received = once(tcp, 'data');
-  (await attach(a)).send(Buffer.from('A route'));
+  (await attach()).send(Buffer.from('A route'));
   assert.equal((await received)[0].toString(), 'A route');
   a1.send({ type: 'device', id: randomUUID(), platform: 'darwin' });
   assert.equal((await once(a1.socket, 'close'))[0], 4003);
@@ -459,7 +465,8 @@ test('browser and phone cookies inherit space; changing login revokes the prior 
     phone = await browser(cookieA),
     cookieB = await login(b),
     foreign = await browser(cookieB);
-  assert.equal(phone.ready.spaceId, 'A');
+  assert.equal(phone.ready.version, '0.3.9');
+  assert.equal(phone.ready.protocolVersion, 22);
   assert.equal(phone.ready.sessions[0].id, id);
   assert.equal(foreign.ready.sessions.length, 0);
   const mine = await a1.data({ type: 'web.settings.get' }, 'web.settings.state');

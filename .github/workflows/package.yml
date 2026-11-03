@@ -1,6 +1,5 @@
-# Builds the release files on GitHub's machines instead of a maintainer's own: the Windows installer, the
-# macOS and Linux packages, the terminal client ccdt and the server bundle, each client started as a check. This is where a release
-# is built: a v*-mod tag creates a draft and publishes it after every job succeeds. Manual runs may name
+# Builds the server bundle and images, reusing the unmodified official desktop and ccdt release files.
+# This is where a release is built: a vX.Y.Z tag creates a draft and publishes it after every job succeeds. Manual runs may name
 # an existing draft in `release`; otherwise the files stay with the run for 3 days. Nothing is signed with a certificate.
 name: package
 on:
@@ -10,14 +9,12 @@ on:
         description: Tag of a draft release to attach the files to. Left empty, they stay with the run.
         default: ''
   push:
-    tags: ['v*-mod']
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
 permissions:
   contents: read
 concurrency:
   group: package-${{ github.ref }}
   cancel-in-progress: true
-# The steps that download Electron and the packaging tools are tried a second time after a minute: those
-# downloads now and then time out.
 jobs:
   prepare:
     runs-on: ubuntu-24.04
@@ -41,12 +38,13 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then tag="$GITHUB_REF_NAME"; fi
           if [[ -z "$tag" ]]; then exit 0; fi
           version="$(node -p "require('./apps/desktop/package.json').version")"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$tag" = "v$version"
           if draft="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)"; then
             test "$draft" = true || { echo 'Published releases are immutable.' >&2; exit 1; }
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-              --draft --title "CC Desk Tunnel $version（改版）" --notes-file artifacts/release/notes.md
+              --draft --title "CC Desk Tunnel $version" --notes-file artifacts/release/notes.md
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
   # The server image of the release, for amd64 and arm64 (see images.yml).
@@ -59,198 +57,26 @@ jobs:
       packages: write
     with:
       tag: ${{ needs.prepare.outputs.release }}
-  windows:
-    needs: prepare
-    runs-on: windows-2022
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-      # Electron and the packaging tools, kept from one run to the next: they are fetched from release pages
-      # that now and then time out, and change only with the versions the lock file names.
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-            ~/Library/Caches/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron
-            ~/.cache/electron-builder
-            .tools
-          key: packaging-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'scripts/prepare-windows.ps1') }}
-      - run: npm ci
-      - run: npm run setup:desktop || (sleep 60 && npm run setup:desktop)
-        shell: bash
-      # The bundled OpenSSH and PowerShell, fetched and checked against the hashes the script names.
-      - run: npm run prepare:windows:package || (sleep 60 && npm run prepare:windows:package)
-        shell: bash
-      # Ends with the packaged program started offline; a package that does not start fails here.
-      - run: npm run package:windows || (sleep 60 && npm run package:windows)
-        shell: bash
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows-x64
-          path: artifacts/windows/*.exe
-          if-no-files-found: error
-          retention-days: 3
-      # The terminal client with the same bundled components, installed the way a user installs it and started
-      # from where it went.
-      - run: npm run package:cli
-        shell: bash
-      - run: |
-          $folder = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\ccdt"
-          tar -xf (Get-Item artifacts/cli/*.zip).FullName -C $folder
-          & "$folder\ccdt\install.ps1"
-          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + $env:Path
-          ccdt --version
-          if ($LASTEXITCODE) { throw 'The installed ccdt did not start.' }
-        shell: pwsh
-      - uses: actions/upload-artifact@v7
-        with:
-          name: cli-windows-x64
-          path: artifacts/cli/*.zip
-          if-no-files-found: error
-          retention-days: 3
-  # One package for each kind of Mac, each built and started on a machine of its own kind. The picture is of
-  # the window as the system draws it there.
-  macos:
-    needs: prepare
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { runner: macos-15, arch: arm64 }
-          - { runner: macos-15-intel, arch: x64 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-      # Electron and the packaging tools, kept from one run to the next: they are fetched from release pages
-      # that now and then time out, and change only with the versions the lock file names.
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-            ~/Library/Caches/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron
-            ~/.cache/electron-builder
-            .tools
-          key: packaging-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'scripts/prepare-windows.ps1') }}
-      - run: npm ci
-      - run: npm run setup:desktop || (sleep 60 && npm run setup:desktop)
-        shell: bash
-      - run: npm run package:macos -- --${{ matrix.arch }} || (sleep 60 && npm run package:macos -- --${{ matrix.arch }})
-        shell: bash
-        env:
-          SMOKE_SCREENSHOT: artifacts/macos/window-${{ matrix.arch }}.png
-      - uses: actions/upload-artifact@v7
-        with:
-          name: macos-${{ matrix.arch }}
-          path: |
-            artifacts/macos/*.dmg
-            artifacts/macos/*.zip
-          if-no-files-found: error
-          retention-days: 3
-      - run: npm run package:cli && tar -xzf artifacts/cli/*.tar.gz -C "$RUNNER_TEMP" && "$RUNNER_TEMP/ccdt/install.sh" && ~/.local/bin/ccdt --version
-        shell: bash
-      - uses: actions/upload-artifact@v7
-        with:
-          name: cli-macos-${{ matrix.arch }}
-          path: artifacts/cli/*.tar.gz
-          if-no-files-found: error
-          retention-days: 3
-      # By itself, so that it can be looked at without fetching the package.
-      - uses: actions/upload-artifact@v7
-        with:
-          name: macos-${{ matrix.arch }}-window
-          path: artifacts/macos/*.png
-          if-no-files-found: warn
-          retention-days: 3
-  # The .deb, built and then installed the way a user installs it, and started from where it was installed:
-  # that is where its sandbox and what it depends on are in place. A virtual screen stands in for a desktop.
-  linux:
+  # Clients are the upstream release files, verified against upstream hashes and copied without rebuilding.
+  clients:
     needs: prepare
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb imagemagick
-      # Electron and the packaging tools, kept from one run to the next: they are fetched from release pages
-      # that now and then time out, and change only with the versions the lock file names.
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-            ~/Library/Caches/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron
-            ~/.cache/electron-builder
-            .tools
-          key: packaging-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'scripts/prepare-windows.ps1') }}
-      - run: npm ci
-      - run: npm run setup:desktop || (sleep 60 && npm run setup:desktop)
-        shell: bash
-      - run: npm run package:linux || (sleep 60 && npm run package:linux)
-        shell: bash
-      - run: sudo apt-get install -y ./artifacts/linux/*.deb
-      - run: xvfb-run -a -s "-screen 0 1280x900x24" node scripts/smoke-posix-package.mjs "/opt/CC Desk Tunnel/cc-desk-tunnel"
-        env:
-          SMOKE_SCREENSHOT: artifacts/linux/window-x64.png
-      - uses: actions/upload-artifact@v7
-        with:
-          name: linux-x64
-          path: artifacts/linux/*.deb
-          if-no-files-found: error
-          retention-days: 3
-      - run: npm run package:cli && tar -xzf artifacts/cli/*.tar.gz -C "$RUNNER_TEMP" && "$RUNNER_TEMP/ccdt/install.sh" && ~/.local/bin/ccdt --version
-        shell: bash
-      - uses: actions/upload-artifact@v7
-        with:
-          name: cli-linux-x64
-          path: artifacts/cli/*.tar.gz
-          if-no-files-found: error
-          retention-days: 3
-      - uses: actions/upload-artifact@v7
-        with:
-          name: linux-x64-window
-          path: artifacts/linux/*.png
-          if-no-files-found: warn
-          retention-days: 3
-  # ccdt for Linux on arm64, such as an ARM server or a Raspberry Pi: there is no desktop package for it.
-  cli-linux-arm64:
-    needs: prepare
-    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
-      - run: npm run package:cli && tar -xzf artifacts/cli/*.tar.gz -C "$RUNNER_TEMP" && "$RUNNER_TEMP/ccdt/install.sh" && ~/.local/bin/ccdt --version
-        shell: bash
+      - name: Verify client sources match the official tag
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          git fetch --depth=1 https://github.com/sun168567/cc-desk-tunnel.git "refs/tags/v$version"
+          git diff --exit-code FETCH_HEAD -- apps/desktop apps/cli packages/protocol
+      - run: node scripts/fetch-official-clients.mjs
       - uses: actions/upload-artifact@v7
         with:
-          name: cli-linux-arm64
-          path: artifacts/cli/*.tar.gz
+          name: official-clients
+          path: artifacts/official-clients/*
           if-no-files-found: error
           retention-days: 3
   server:
@@ -280,7 +106,7 @@ jobs:
   # write to the repository.
   attach:
     if: needs.prepare.outputs.release != ''
-    needs: [prepare, windows, macos, linux, cli-linux-arm64, server, images]
+    needs: [prepare, clients, server, images]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -309,7 +135,7 @@ jobs:
           node-version: 24
       - uses: actions/download-artifact@v8
         with:
-          pattern: '{windows-x64,macos-arm64,macos-x64,linux-x64,server,cli-*}'
+          pattern: '{official-clients,server}'
           merge-multiple: true
           path: downloaded
       - run: |
