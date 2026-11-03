@@ -96,7 +96,8 @@ test('commands share one SSH connection where the platform and the length of the
     sshConfig(directory, 32123, 'user', 'ssh-ed25519 AAAATEST', platform).config;
   const shared = config('/data/state/connections/0d0c6a0e-6a53-4a0c-9d3a-2f6f5f3f7b11', 'linux');
   assert.match(shared, /ControlMaster auto/);
-  assert.match(shared, /ControlPath ".*0d0c6a0e-6a53-4a0c-9d3a-2f6f5f3f7b11[\\/]mux"/);
+  // Windows path separators are escaped inside the quoted SSH configuration value.
+  assert.match(shared, /ControlPath ".*0d0c6a0e-6a53-4a0c-9d3a-2f6f5f3f7b11(?:\\\\|\/)mux"/);
   assert.match(shared, /ControlPersist \d+/);
   assert.doesNotMatch(config('/tmp/private', 'win32'), /Control/);
   assert.doesNotMatch(config(`/srv/${'long-name/'.repeat(9)}connections/id`, 'linux'), /Control/);
