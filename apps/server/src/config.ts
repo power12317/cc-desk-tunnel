@@ -94,7 +94,7 @@ export function environmentConfig(
     (platform === 'linux' || env.PROXY_RELEASE_REPO)
   )
     options.updates = {
-      repository: env.PROXY_RELEASE_REPO ?? 'sun168567/cc-desk-tunnel',
+      repository: env.PROXY_RELEASE_REPO ?? 'power12317/cc-desk-tunnel',
       token: env.PROXY_RELEASE_TOKEN || undefined,
       programDir:
         env.PROXY_PROGRAM_DIR && env.PROXY_RUNTIME_DIR ? env.PROXY_PROGRAM_DIR : undefined,

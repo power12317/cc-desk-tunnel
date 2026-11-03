@@ -1,8 +1,7 @@
 # Builds the release files on GitHub's machines instead of a maintainer's own: the Windows installer, the
 # macOS and Linux packages, the terminal client ccdt and the server bundle, each client started as a check. This is where a release
-# is built: the release script names its draft in `release`, and the files are attached to it with their
-# hashes. Nothing is signed with a certificate. Otherwise the files are kept with the run for 3 days; it
-# runs when asked for, and by itself when what does the packaging changes on a dev branch.
+# is built: a v*-mod tag creates a draft and publishes it after every job succeeds. Manual runs may name
+# an existing draft in `release`; otherwise the files stay with the run for 3 days. Nothing is signed with a certificate.
 name: package
 on:
   workflow_dispatch:
@@ -11,14 +10,7 @@ on:
         description: Tag of a draft release to attach the files to. Left empty, they stay with the run.
         default: ''
   push:
-    branches: ['dev/**']
-    paths:
-      - .github/workflows/package.yml
-      - scripts/package-*.mjs
-      - scripts/release-manifest.mjs
-      - scripts/smoke-posix-package.mjs
-      - scripts/prepare-windows.ps1
-      - apps/cli/install/**
+    tags: ['v*-mod']
 permissions:
   contents: read
 concurrency:
@@ -27,16 +19,48 @@ concurrency:
 # The steps that download Electron and the packaging tools are tried a second time after a minute: those
 # downloads now and then time out.
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      release: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: node scripts/release.mjs --dry-run
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.release }}
+        run: |
+          tag="$REQUESTED"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then tag="$GITHUB_REF_NAME"; fi
+          if [[ -z "$tag" ]]; then exit 0; fi
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          test "$tag" = "v$version"
+          if draft="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            test "$draft" = true || { echo 'Published releases are immutable.' >&2; exit 1; }
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --draft --title "CC Desk Tunnel $version（改版）" --notes-file artifacts/release/notes.md
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
   # The server image of the release, for amd64 and arm64 (see images.yml).
   images:
-    if: inputs.release != ''
+    needs: prepare
+    if: needs.prepare.outputs.release != ''
     uses: ./.github/workflows/images.yml
     permissions:
       contents: read
       packages: write
     with:
-      tag: ${{ inputs.release }}
+      tag: ${{ needs.prepare.outputs.release }}
   windows:
+    needs: prepare
     runs-on: windows-2022
     timeout-minutes: 30
     steps:
@@ -94,6 +118,7 @@ jobs:
   # One package for each kind of Mac, each built and started on a machine of its own kind. The picture is of
   # the window as the system draws it there.
   macos:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -154,6 +179,7 @@ jobs:
   # The .deb, built and then installed the way a user installs it, and started from where it was installed:
   # that is where its sandbox and what it depends on are in place. A virtual screen stands in for a desktop.
   linux:
+    needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -207,6 +233,7 @@ jobs:
           retention-days: 3
   # ccdt for Linux on arm64, such as an ARM server or a Raspberry Pi: there is no desktop package for it.
   cli-linux-arm64:
+    needs: prepare
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
@@ -227,6 +254,7 @@ jobs:
           if-no-files-found: error
           retention-days: 3
   server:
+    needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -251,14 +279,31 @@ jobs:
   # release.json and SHA256SUMS, without passing through a maintainer's computer. The only job that may
   # write to the repository.
   attach:
-    if: inputs.release != ''
-    needs: [windows, macos, linux, cli-linux-arm64, server, images]
+    if: needs.prepare.outputs.release != ''
+    needs: [prepare, windows, macos, linux, cli-linux-arm64, server, images]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v7
+      - if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 30); do
+            run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow check.yml --event push --commit "$GITHUB_SHA" --json status,conclusion --limit 1)"
+            state="$(printf '%s' "$run" | jq -r '.[0].status // "missing"')"
+            result="$(printf '%s' "$run" | jq -r '.[0].conclusion // ""')"
+            if [[ "$state" == completed ]]; then
+              test "$result" = success || { echo "Main checks: $result" >&2; exit 1; }
+              exit 0
+            fi
+            sleep 20
+          done
+          echo 'Main checks have not completed successfully; the release stays a draft.' >&2
+          exit 1
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -274,4 +319,16 @@ jobs:
           gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release }}
+          TAG: ${{ needs.prepare.outputs.release }}
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.release }}
+  promote:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: attach
+    uses: ./.github/workflows/image-latest.yml
+    permissions:
+      contents: read
+      packages: write

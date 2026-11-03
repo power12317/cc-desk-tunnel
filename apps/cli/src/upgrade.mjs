@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { packageName } from './runtime.mjs';
 
-const RELEASES = 'https://github.com/sun168567/cc-desk-tunnel/releases/download';
+const RELEASES = 'https://github.com/power12317/cc-desk-tunnel/releases/download';
 // The first release whose install script replaces a ccdt while it runs; an earlier one's would leave it half removed.
 export const FIRST_UPGRADABLE = '0.3.9';
 

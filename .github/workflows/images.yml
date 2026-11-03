@@ -1,6 +1,6 @@
 # The server image of a release, for amd64 and arm64: each is built on its own architecture, deployed the ways
 # deploy/test.sh and deploy/test-image.sh go through, and only then pushed; the two become one tag,
-# ghcr.io/sun168567/cc-desk-tunnel:X.Y.Z. The package workflow runs this for a release. By hand, an empty tag only
+# ghcr.io/power12317/cc-desk-tunnel:X.Y.Z. The package workflow runs this for a release. By hand, an empty tag only
 # builds and tests, and a tag verify-NAME publishes a test image apart from the released ones.
 name: images
 on:

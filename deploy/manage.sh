@@ -26,7 +26,7 @@ Requires Docker Engine + Compose v2+, Bash, OpenSSL, curl, tar.
 Use sudo if your user cannot access Docker. Config defaults to .local/docker.env;
 set PROXY_DEPLOY_CONFIG to manage a different isolated installation.
 Set PROXY_COMPOSE_FILE when managing an image-only standalone compose.yml.
-The image is the prebuilt one of this program's version (ghcr.io/sun168567/cc-desk-tunnel:X.Y.Z), built here
+The image is the prebuilt one of this program's version (ghcr.io/power12317/cc-desk-tunnel:X.Y.Z), built here
 when it cannot be pulled. CC_DESK_TUNNEL_BUILD=1 always builds here, CC_DESK_TUNNEL_BUILD=0 never does.
 upgrade fetches the newest release; CC_DESK_TUNNEL_VERSION=X.Y.Z picks another.
 After an install with sudo, `sudo cc-desk-tunnel COMMAND` runs this script from anywhere.
@@ -93,7 +93,7 @@ build_image() {
     -f "$ROOT/deploy/docker/compose.yaml" build --pull
   save_image cc-desk-tunnel:local
 }
-version_of() { sed -n 's/^ *"version": "\([0-9.]*\)",\{0,1\}$/\1/p' "$ROOT/apps/desktop/package.json" 2>/dev/null | head -n 1; }
+version_of() { sed -n 's/^ *"version": "\([0-9][0-9.]*\(-mod\)\{0,1\}\)",\{0,1\}$/\1/p' "$ROOT/apps/desktop/package.json" 2>/dev/null | head -n 1; }
 save_image() {
   local temp
   temp="$(mktemp "$CONFIG.XXXXXX")"
@@ -105,8 +105,8 @@ save_image() {
 pull_image() {
   local version image
   version="$(version_of)"
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "No program version in $ROOT/apps/desktop/package.json."
-  image="${CC_DESK_TUNNEL_IMAGE:-ghcr.io/sun168567/cc-desk-tunnel}:$version"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-mod)?$ ]] || fail "No program version in $ROOT/apps/desktop/package.json."
+  image="${CC_DESK_TUNNEL_IMAGE:-ghcr.io/power12317/cc-desk-tunnel}:$version"
   echo "拉取镜像 $image …"
   docker pull "$image" || return
   # Only a pulled image is configured: a failed pull leaves the deployment as it was.
@@ -126,10 +126,10 @@ prepare_image() {
 }
 # The newest release's server archive (or CC_DESK_TUNNEL_VERSION's), checked against its SHA256SUMS.
 fetch_release() {
-  local releases=https://github.com/sun168567/cc-desk-tunnel/releases name version current
+  local releases=https://github.com/power12317/cc-desk-tunnel/releases name version current
   local listed="$releases/latest/download"
   if [[ -n "${CC_DESK_TUNNEL_VERSION:-}" ]]; then
-    [[ "$CC_DESK_TUNNEL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "CC_DESK_TUNNEL_VERSION must be X.Y.Z."
+    [[ "$CC_DESK_TUNNEL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-mod)?$ ]] || fail "CC_DESK_TUNNEL_VERSION must be X.Y.Z or X.Y.Z-mod."
     listed="$releases/download/v$CC_DESK_TUNNEL_VERSION"
   fi
   FETCHED="$(mktemp -d)"
@@ -139,7 +139,7 @@ fetch_release() {
     echo "读不到发布页（检查这台机器能否访问 github.com），不下载新版本，用当前的 $(version_of) 继续。"
     return
   fi
-  name="$(awk '$2 ~ /^cc-desk-tunnel-server-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz$/ { print $2 }' "$FETCHED/SHA256SUMS" | head -n 1)"
+  name="$(awk '$2 ~ /^cc-desk-tunnel-server-[0-9]+\.[0-9]+\.[0-9]+(-mod)?\.tar\.gz$/ { print $2 }' "$FETCHED/SHA256SUMS" | head -n 1)"
   [[ -n "$name" ]] || fail "The release has no server archive."
   version="${name#cc-desk-tunnel-server-}"; version="${version%.tar.gz}"
   # Nothing newer, or the version asked for is here already. This is also how a manage.sh from before the images hands
@@ -364,7 +364,7 @@ case "$command" in
     if grep -q '^FRPS_PORT=' "$CONFIG"; then sed -i '/^FRPS_PORT=/d' "$CONFIG"; fi
     dc up -d --no-build; wait_healthy
     # Each image is a few gigabytes. The one replaced goes, if it is one of this project's that can be had again.
-    if [[ "$previous" != "$PROXY_IMAGE" && "$previous" =~ ^(ghcr\.io/sun168567/cc-desk-tunnel:.+|cc-desk-tunnel:local)$ ]] \
+    if [[ "$previous" != "$PROXY_IMAGE" && "$previous" =~ ^(ghcr\.io/power12317/cc-desk-tunnel:.+|cc-desk-tunnel:local)$ ]] \
       && [[ "$(docker image inspect -f '{{.Id}}' "$previous" 2>/dev/null)" != "$(docker image inspect -f '{{.Id}}' "$PROXY_IMAGE")" ]] \
       && docker image rm "$previous" >/dev/null 2>&1; then
       echo "已删除替换下来的镜像 $previous。"
@@ -372,7 +372,7 @@ case "$command" in
     summary ;;
   summary) summary ;;
   client)
-    [[ $# = 1 && -f "$1" && "$(basename -- "$1")" =~ ^CC-Desk-Tunnel-Setup-[0-9]+\.[0-9]+\.[0-9]+-x64\.exe$ ]] \
+    [[ $# = 1 && -f "$1" && "$(basename -- "$1")" =~ ^CC-Desk-Tunnel-Setup-[0-9]+\.[0-9]+\.[0-9]+(-mod)?-x64\.exe$ ]] \
       || fail "Specify the installer as built: CC-Desk-Tunnel-Setup-X.Y.Z-x64.exe"
     mkdir -p "$DATA_DIR/state/client"
     install -m 644 "$1" "$DATA_DIR/state/client/"

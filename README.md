@@ -1,12 +1,14 @@
 # CC Desk Tunnel（CC 桌面隧道）
 
+> **mod 改版**：本 fork 发布 `X.Y.Z-mod` 版本，安装器、服务端与 amd64/arm64 镜像均来自 `power12317/cc-desk-tunnel`。基于上游项目改造，新增访问空间与 macOS 原生服务；原有 Docker 部署继续支持。
+
 **简体中文** | [English](README.en.md)
 
 用桌面客户端驱动云端的 Claude Code，经反向隧道在你的 Windows 本机执行。
 
 Claude Code（简称 CC）运行在一台 Linux 服务器上；项目代码、编译器和各种工具都留在 Windows 本机。CC Desk Tunnel 把两端接起来：服务器上是一个容器，Windows 上是一个桌面客户端，Claude 通过一条加密的反向 SSH 通道在你的电脑上读写文件、执行命令。
 
-[下载](https://github.com/sun168567/cc-desk-tunnel/releases/latest) · [快速开始](#快速开始) · [安全须知](#安全须知) · [文档](#文档) · 许可：[Apache-2.0](LICENSE)
+[下载](https://github.com/power12317/cc-desk-tunnel/releases/latest) · [快速开始](#快速开始) · [安全须知](#安全须知) · [文档](#文档) · 许可：[Apache-2.0](LICENSE)
 
 > [!WARNING]
 > **本项目主要由 AI 编写**，由个人维护，没有经过专业的安全审计，可能存在尚未发现的缺陷。它会让一台服务器获得在你电脑上执行命令的能力，使用前请读完[安全须知](#安全须知)和[账号须知](#账号须知)，并自行评估风险。
@@ -71,7 +73,7 @@ Claude Code（简称 CC）运行在一台 Linux 服务器上；项目代码、�
 在服务器上执行：
 
 ```sh
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/sun168567/cc-desk-tunnel/main/deploy/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/power12317/cc-desk-tunnel/main/deploy/install.sh)"
 ```
 
 脚本会：
@@ -81,7 +83,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/sun168567/cc-desk-t
 3. 询问公网地址、证书方式、端口和数据目录（都有默认值，一路回车即可），然后拉取这个版本的镜像并启动。
 4. 打印客户端要填的**服务地址、证书指纹、服务凭据**，以及需要在防火墙放行的 TCP 端口（默认 8787，只有这一个）。
 
-镜像是 GitHub 上预先构建好的（`ghcr.io/sun168567/cc-desk-tunnel`，x86_64 和 arm64 自动选择），几分钟内就能装好。服务器连不上 ghcr.io 时，脚本会改为在服务器上构建，首次需要多等几分钟。脚本不会修改防火墙、nginx 或 SSH 配置。
+镜像是 GitHub 上预先构建好的（`ghcr.io/power12317/cc-desk-tunnel`，x86_64 和 arm64 自动选择），几分钟内就能装好。服务器连不上 ghcr.io 时，脚本会改为在服务器上构建，首次需要多等几分钟。脚本不会修改防火墙、nginx 或 SSH 配置。
 
 装好后，日常管理用 `cc-desk-tunnel` 命令，在任何目录下都能运行：
 
@@ -96,7 +98,7 @@ sudo cc-desk-tunnel help      # 全部命令：更换凭据、备份恢复、证
 
 ### 2. 安装 Windows 客户端
 
-从[发布页](https://github.com/sun168567/cc-desk-tunnel/releases/latest)下载 `CC-Desk-Tunnel-Setup-<版本>-x64.exe` 并安装。安装包自带 PowerShell 7 和 OpenSSH，不需要另装任何东西。启动后填入上一步的三项信息并连接。
+从[发布页](https://github.com/power12317/cc-desk-tunnel/releases/latest)下载 `CC-Desk-Tunnel-Setup-<版本>-x64.exe` 并安装。安装包自带 PowerShell 7 和 OpenSSH，不需要另装任何东西。启动后填入上一步的三项信息并连接。
 
 首次运行会遇到 SmartScreen 提示，处理方法见[杀毒软件与 SmartScreen](#杀毒软件与-smartscreen)。
 
@@ -151,7 +153,7 @@ macOS 与 Linux 的安装包在同一个发布页，安装方法见 [macOS 客�
 ## 杀毒软件与 SmartScreen
 
 - **不再带 frpc。** 0.2.9 及更早的客户端带有内网穿透工具 frp 的 `frpc.exe`，它经常被 Windows Defender 和其他杀毒软件当作“黑客工具 / 风险软件”隔离。0.2.10 起执行通道由客户端自己经服务地址建立，安装包和服务端镜像里都没有 frp 了；升级后旧的 `frpc.exe` 会被安装程序删除。
-- **内置组件被拦截时，先核对再放行。** 客户端仍带有官方发布的 OpenSSH 和 PowerShell 7，打包时校验 SHA256，只在连接期间运行，只监听本机。它们被拦截的情况少见；遇到时先确认安装包来自本仓库的[发布页](https://github.com/sun168567/cc-desk-tunnel/releases/latest)，对照 `SHA256SUMS` 校验，并查看具体被拦截的文件。确认来源后，仅对已核验的组件文件设置必要的例外，不建议关闭杀毒软件或排除整个磁盘。文件已被隔离时，可在核验后恢复或重新安装。
+- **内置组件被拦截时，先核对再放行。** 客户端仍带有官方发布的 OpenSSH 和 PowerShell 7，打包时校验 SHA256，只在连接期间运行，只监听本机。它们被拦截的情况少见；遇到时先确认安装包来自本仓库的[发布页](https://github.com/power12317/cc-desk-tunnel/releases/latest)，对照 `SHA256SUMS` 校验，并查看具体被拦截的文件。确认来源后，仅对已核验的组件文件设置必要的例外，不建议关闭杀毒软件或排除整个磁盘。文件已被隔离时，可在核验后恢复或重新安装。
 - **SmartScreen。** 安装包没有代码签名，首次运行会出现“Windows 已保护你的电脑”，点“更多信息 → 仍要运行”。
 - 项目不会修改任何安全软件的设置。不放心可以自己从源码构建。
 

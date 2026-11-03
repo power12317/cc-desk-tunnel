@@ -37,7 +37,7 @@ async function feed(t: TestContext, version: string, runtime = 1) {
   const server = createServer((request, response) => {
     requests.push({ url: request.url!, authorization: request.headers.authorization });
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    if (/^\/repos\/owner\/name\/releases\/(latest|tags\/v[\d.]+)$/.test(request.url!))
+    if (/^\/repos\/owner\/name\/releases\/(latest|tags\/v[\d.]+(?:-mod)?)$/.test(request.url!))
       response.end(
         JSON.stringify({
           assets: [
@@ -267,4 +267,16 @@ test('starting clears the programs of other versions and unfinished downloads, a
     kept.filter((path) => !existsSync(path)),
     [],
   );
+});
+
+test('mod version manifests and update ordering keep the fork suffix', async (t) => {
+  assert.equal(isNewer('0.3.9-mod', '0.3.9'), true);
+  assert.equal(isNewer('0.3.9', '0.3.9-mod'), false);
+  assert.equal(isNewer('0.3.10-mod', '0.3.9-mod'), true);
+  assert.equal(isNewer('0.3.9-mod', '0.3.9-mod'), false);
+  const f = await feed(t, '99.0.0-mod');
+  const updates = f.updates({ runtimeLevel: 1 });
+  await updates.check();
+  assert.equal(updates.state.latest, '99.0.0-mod');
+  assert.equal(updates.state.state, 'available');
 });

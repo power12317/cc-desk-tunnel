@@ -4,7 +4,7 @@ import { webCertificateStateSchema } from './web-certificate.ts';
 export * from './web.ts';
 export * from './web-certificate.ts';
 
-export const PROTOCOL_VERSION = 22;
+export const PROTOCOL_VERSION = 23;
 // The release each protocol version began with, from 0.2.4 on: a client newer than its service signs in with
 // the service's number to have it upgrade (see the README). A new number adds its line here.
 export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
@@ -21,6 +21,7 @@ export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
   '0.3.6': 20,
   '0.3.7': 21,
   '0.3.8': 22,
+  '0.3.9-mod': 23,
 };
 export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
@@ -478,7 +479,18 @@ export const historyPageSchema = snapshotSchema.extend({
 });
 export type HistoryPage = z.infer<typeof historyPageSchema>;
 
-const versionSchema = z.string().regex(/^\d+\.\d+\.\d+$/);
+export const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-mod)?$/;
+// A mod build follows its numeric upstream base; the suffix marks the fork, not a beta channel.
+export function isNewerVersion(candidate: string, current: string) {
+  if (!RELEASE_VERSION_PATTERN.test(candidate) || !RELEASE_VERSION_PATTERN.test(current))
+    return false;
+  const [a, b] = [candidate, current].map((value) =>
+    value.replace(/-mod$/, '').split('.').map(Number),
+  );
+  for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] > b[index];
+  return candidate.endsWith('-mod') && !current.endsWith('-mod');
+}
+const versionSchema = z.string().regex(RELEASE_VERSION_PATTERN);
 const installerSchema = z.object({
   version: versionSchema,
   size: z.number().int().positive(),

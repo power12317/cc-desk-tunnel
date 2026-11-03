@@ -1,12 +1,14 @@
 # CC Desk Tunnel
 
+> **Modified edition (`mod`)**: this fork publishes `X.Y.Z-mod` clients, server bundles and amd64/arm64 images from `power12317/cc-desk-tunnel`, adding access-key spaces and native macOS hosting while keeping Docker deployment.
+
 [简体中文](README.md) | **English**
 
 Drive Claude Code in the cloud from a desktop client, and let it work on your Windows PC through a reverse tunnel.
 
 Claude Code (CC for short) runs on a Linux server; your code, compilers and tools stay on Windows. CC Desk Tunnel connects the two: a container on the server, a desktop client on Windows, and an encrypted reverse SSH channel through which Claude reads and writes files and runs commands on your computer.
 
-[Download](https://github.com/sun168567/cc-desk-tunnel/releases/latest) · [Quick start](#quick-start) · [Security](#security) · [Documentation](#documentation) · License: [Apache-2.0](LICENSE)
+[Download](https://github.com/power12317/cc-desk-tunnel/releases/latest) · [Quick start](#quick-start) · [Security](#security) · [Documentation](#documentation) · License: [Apache-2.0](LICENSE)
 
 > [!WARNING]
 > **This project is mostly written by AI**, maintained by one person, and has not had a professional security audit. It may contain undiscovered defects. It gives a server the ability to run commands on your computer: read [Security](#security) and [Your account](#your-account) first and judge the risk for yourself.
@@ -80,7 +82,7 @@ You need a Linux server with a public IP or domain name (x86_64, or arm64 as exp
 On the server:
 
 ```sh
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/sun168567/cc-desk-tunnel/main/deploy/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/power12317/cc-desk-tunnel/main/deploy/install.sh)"
 ```
 
 The script:
@@ -90,7 +92,7 @@ The script:
 3. Asks for the public address, certificate mode, ports and data directory (every question has a default), then pulls the image of that version and starts it.
 4. Prints what the client needs — **service address, certificate fingerprint, service token** — and the TCP port to open in the firewall (8787 by default, the only one).
 
-The image is prebuilt on GitHub (`ghcr.io/sun168567/cc-desk-tunnel`, x86_64 or arm64 as your server needs), so installing takes a few minutes. If the server cannot reach ghcr.io, the script builds the image on the server instead, which takes a few minutes more the first time. The script does not touch the firewall, nginx or SSH.
+The image is prebuilt on GitHub (`ghcr.io/power12317/cc-desk-tunnel`, x86_64 or arm64 as your server needs), so installing takes a few minutes. If the server cannot reach ghcr.io, the script builds the image on the server instead, which takes a few minutes more the first time. The script does not touch the firewall, nginx or SSH.
 
 Once installed, manage the service with the `cc-desk-tunnel` command, from any directory:
 
@@ -105,7 +107,7 @@ Usually you do not need the server for upgrades: the client's Settings → About
 
 ### 2. Install the Windows client
 
-Download `CC-Desk-Tunnel-Setup-<version>-x64.exe` from the [releases page](https://github.com/sun168567/cc-desk-tunnel/releases/latest) and install it. It bundles PowerShell 7 and OpenSSH; nothing else is needed. Start it, enter the three values from step 1 and connect.
+Download `CC-Desk-Tunnel-Setup-<version>-x64.exe` from the [releases page](https://github.com/power12317/cc-desk-tunnel/releases/latest) and install it. It bundles PowerShell 7 and OpenSSH; nothing else is needed. Start it, enter the three values from step 1 and connect.
 
 Expect a SmartScreen prompt on first run; see [Antivirus and SmartScreen](#antivirus-and-smartscreen).
 
@@ -158,7 +160,7 @@ That describes the structure. **It is not a guarantee about your account.** Keep
 ## Antivirus and SmartScreen
 
 - **frpc is no longer bundled.** Clients up to 0.2.9 shipped `frpc.exe` from the tunnelling tool frp, which Windows Defender and other antivirus products often quarantine as "hack tool / riskware". From 0.2.10 the client sets up the execution channel itself through the service address; neither the installer nor the server image contains frp, and the installer removes the old `frpc.exe` on upgrade.
-- **Verify before allowing a bundled component.** The client still bundles the official releases of OpenSSH and PowerShell 7, verifies their SHA256 when packaging, runs them only while connected and has them listen on this machine only. They are rarely blocked; if it happens, check that the installer comes from this repository's [releases page](https://github.com/sun168567/cc-desk-tunnel/releases/latest), verify it against `SHA256SUMS`, and identify the file that was blocked. After checking the source, make only the necessary exception for the verified component file; do not disable antivirus or exclude a whole drive. Restore quarantined files or reinstall only after verification.
+- **Verify before allowing a bundled component.** The client still bundles the official releases of OpenSSH and PowerShell 7, verifies their SHA256 when packaging, runs them only while connected and has them listen on this machine only. They are rarely blocked; if it happens, check that the installer comes from this repository's [releases page](https://github.com/power12317/cc-desk-tunnel/releases/latest), verify it against `SHA256SUMS`, and identify the file that was blocked. After checking the source, make only the necessary exception for the verified component file; do not disable antivirus or exclude a whole drive. Restore quarantined files or reinstall only after verification.
 - **SmartScreen.** The installer is not code-signed. On first run Windows shows "Windows protected your PC": choose "More info → Run anyway".
 - The project never changes the settings of any security software. If in doubt, build from source.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs or upgrades the CC Desk Tunnel service on this machine. It can be run on its own,
-#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/sun168567/cc-desk-tunnel/main/deploy/install.sh)"
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/power12317/cc-desk-tunnel/main/deploy/install.sh)"
 # in which case it fetches the newest release from GitHub (CC_DESK_TUNNEL_VERSION=X.Y.Z picks another), or from an
 # unpacked server archive, which it then uses. The service runs the prebuilt image of that version where there is
 # one, and builds it here where there is not (see manage.sh).
@@ -8,7 +8,7 @@
 # the firewall, nginx and SSH alone. Its one addition to the host is the command `cc-desk-tunnel`.
 set -euo pipefail
 
-REPO="${CC_DESK_TUNNEL_REPO:-sun168567/cc-desk-tunnel}"
+REPO="${CC_DESK_TUNNEL_REPO:-power12317/cc-desk-tunnel}"
 TARGET="${CC_DESK_TUNNEL_DIR:-/opt/cc-desk-tunnel}"
 TEMP=''
 trap '[[ -z "$TEMP" ]] || rm -rf -- "$TEMP"' EXIT
@@ -18,7 +18,7 @@ confirm() {
   read -r -p "$1 [Y/n]: " answer
   [[ -z "$answer" || "$answer" =~ ^[Yy] ]]
 }
-version_of() { sed -n 's/^ *"version": "\([0-9.]*\)",\{0,1\}$/\1/p' "$1/apps/desktop/package.json" 2>/dev/null | head -n 1; }
+version_of() { sed -n 's/^ *"version": "\([0-9][0-9.]*\(-mod\)\{0,1\}\)",\{0,1\}$/\1/p' "$1/apps/desktop/package.json" 2>/dev/null | head -n 1; }
 
 main() {
   # Without arguments the installer asks its questions, gets the image, starts and prints a summary.
@@ -65,13 +65,13 @@ main() {
     temp="$(mktemp -d)"
     TEMP="$temp"
     if [[ -n "${CC_DESK_TUNNEL_VERSION:-}" ]]; then
-      [[ "$CC_DESK_TUNNEL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "CC_DESK_TUNNEL_VERSION 应写成 X.Y.Z。"
+      [[ "$CC_DESK_TUNNEL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-mod)?$ ]] || fail "CC_DESK_TUNNEL_VERSION 应写成 X.Y.Z 或 X.Y.Z-mod。"
       releases="https://github.com/$REPO/releases/download/v$CC_DESK_TUNNEL_VERSION"
     fi
     echo "查询版本（github.com/$REPO）…"
     curl -fsSL --connect-timeout 20 --max-time 60 -o "$temp/SHA256SUMS" "$releases/SHA256SUMS" \
       || fail "无法读取发布页。请检查这台机器能否访问 github.com，以及版本号是否存在。"
-    name="$(awk '$2 ~ /^cc-desk-tunnel-server-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz$/ { print $2 }' "$temp/SHA256SUMS" | head -n 1)"
+    name="$(awk '$2 ~ /^cc-desk-tunnel-server-[0-9]+\.[0-9]+\.[0-9]+(-mod)?\.tar\.gz$/ { print $2 }' "$temp/SHA256SUMS" | head -n 1)"
     [[ -n "$name" ]] || fail "发布页的校验清单里没有服务端程序包。"
     latest="${name#cc-desk-tunnel-server-}"; latest="${latest%.tar.gz}"
 

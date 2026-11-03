@@ -6,7 +6,7 @@
 
 ## 安装
 
-从[发布页](https://github.com/sun168567/cc-desk-tunnel/releases/latest)下载与服务端**相同版本**的包：
+从[发布页](https://github.com/power12317/cc-desk-tunnel/releases/latest)下载与服务端**相同版本**的包：
 
 | 系统 | 文件 |
 | --- | --- |

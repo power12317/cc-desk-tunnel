@@ -21,3 +21,13 @@ test('only the newest three installers are kept; other files are left alone', as
     'notes.txt',
   ]);
 });
+
+test('mod installers retain their suffix and supersede the matching upstream base', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'cc-mod-client-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const version of ['0.3.8-mod', '0.3.9', '0.3.9-mod'])
+    writeFileSync(join(directory, `CC-Desk-Tunnel-Setup-${version}-x64.exe`), version);
+  const releases = new ClientReleases(directory);
+  await releases.refresh();
+  assert.equal(releases.current?.version, '0.3.9-mod');
+});

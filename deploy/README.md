@@ -7,10 +7,10 @@ Ubuntu amd64 优先；arm64 为实验性支持：镜像构建、部署自测和�
 最省事的方式是一条命令。脚本检查 Docker 等依赖（缺少时给出安装命令，不代为安装），从发布页下载最新的服务端程序包并校验，解压到 `/opt/cc-desk-tunnel`，随后进入下面的交互安装；已有部署时改为询问是否升级。程序目录可用环境变量 `CC_DESK_TUNNEL_DIR` 更改，`CC_DESK_TUNNEL_VERSION=X.Y.Z` 可指定版本（写在 `sudo env` 之后）。
 
 ```sh
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/sun168567/cc-desk-tunnel/main/deploy/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/power12317/cc-desk-tunnel/main/deploy/install.sh)"
 ```
 
-镜像用 GitHub 上预先构建好的 `ghcr.io/sun168567/cc-desk-tunnel:X.Y.Z`，版本与程序包相同，x86_64 和 arm64 用同一个标签，Docker 自动选择。拉取不到时（服务器连不上 ghcr.io，或这个版本发布时还没有镜像），改为在服务器上从程序包构建，首次需要几分钟，期间联网下载系统包、Node.js、Claude Code 和 npm 依赖。想始终在本机构建（例如改过 Dockerfile）时设置 `CC_DESK_TUNNEL_BUILD=1`；只用预构建镜像、拉取不到就停下时设置 `CC_DESK_TUNNEL_BUILD=0`。
+镜像用 GitHub 上预先构建好的 `ghcr.io/power12317/cc-desk-tunnel:X.Y.Z`，版本与程序包相同，x86_64 和 arm64 用同一个标签，Docker 自动选择。拉取不到时（服务器连不上 ghcr.io，或这个版本发布时还没有镜像），改为在服务器上从程序包构建，首次需要几分钟，期间联网下载系统包、Node.js、Claude Code 和 npm 依赖。想始终在本机构建（例如改过 Dockerfile）时设置 `CC_DESK_TUNNEL_BUILD=1`；只用预构建镜像、拉取不到就停下时设置 `CC_DESK_TUNNEL_BUILD=0`。
 
 镜像不含 Windows 安装包：服务启动后自己下载同版本的安装包，放在数据目录里供客户端升级，下载失败不影响服务。
 
@@ -142,7 +142,7 @@ Compose 崩溃 / 主机重启恢复，`tini -g` 管理信号与孤儿进程；�
 
 升级先拉取（或构建）新镜像，失败时不改配置、不停旧容器；成功后替换容器，数据保留，被替换下来的本项目镜像随后删除，以免每次升级多占几 GB。数据迁移在新程序启动时进行，换回旧镜像不等于回到旧数据，需要回退时用升级前的备份。没有外网的服务器可在别处 `docker save`、在服务器上 `docker load`，再在私有 `docker.env` 中把 `PROXY_IMAGE` 改成导入的标签后 `up`。
 
-仅导入镜像、手工 Compose 管理时，使用 `deploy/compose.yml`（无 build）。在独立部署目录复制为 `compose.yml`，将初始化生成的 `docker.env` 复制为同目录 `.env`，确认 `PROXY_IMAGE` 为 `ghcr.io/sun168567/cc-desk-tunnel:X.Y.Z` 或已导入的标签；该配置不含 token / API key，但目录和文件仍保持私有。运行 `sudo docker compose up -d` / `ps` / `logs` / `stop`。调用备份等脚本时设置 `PROXY_DEPLOY_CONFIG=/部署目录/.env`、`PROXY_COMPOSE_FILE=/部署目录/compose.yml`，确保使用相同数据和项目。升级时改 `.env` 里的版本号，执行 `sudo docker compose pull` 和 `sudo docker compose up -d`。
+仅导入镜像、手工 Compose 管理时，使用 `deploy/compose.yml`（无 build）。在独立部署目录复制为 `compose.yml`，将初始化生成的 `docker.env` 复制为同目录 `.env`，确认 `PROXY_IMAGE` 为 `ghcr.io/power12317/cc-desk-tunnel:X.Y.Z` 或已导入的标签；该配置不含 token / API key，但目录和文件仍保持私有。运行 `sudo docker compose up -d` / `ps` / `logs` / `stop`。调用备份等脚本时设置 `PROXY_DEPLOY_CONFIG=/部署目录/.env`、`PROXY_COMPOSE_FILE=/部署目录/compose.yml`，确保使用相同数据和项目。升级时改 `.env` 里的版本号，执行 `sudo docker compose pull` 和 `sudo docker compose up -d`。
 
 镜像构建后，`sudo bash deploy/test.sh` 可运行不调用模型的隔离部署回归；占用测试端口 19871..19874，创建临时数据并在结束时回收。不会改既有服务；测试数据被删除，不用来测试生产数据。`sudo bash deploy/test-image.sh` 用临时的本地镜像仓库走一遍拉取、拉取失败、替换容器和旧数据迁移；`bash deploy/test-scripts.sh` 不需要 Docker，用替身检查部署脚本的各种选择。三者都在 CI 里运行。
 

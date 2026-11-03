@@ -4,10 +4,11 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync } fr
 import { open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { isNewerVersion, RELEASE_VERSION_PATTERN } from '@cc-desk-tunnel/protocol';
 import type { ServiceUpdate } from '@cc-desk-tunnel/protocol';
 
 const run = promisify(execFile);
-const versionPattern = /^\d+\.\d+\.\d+$/;
+const versionPattern = RELEASE_VERSION_PATTERN;
 type Manifest = {
   version: string;
   runtime: number;
@@ -53,11 +54,7 @@ export function serviceVersion(): string {
   return JSON.parse(readFileSync(new URL('../../desktop/package.json', import.meta.url), 'utf8'))
     .version;
 }
-export function isNewer(candidate: string, current: string) {
-  const [a, b] = [candidate, current].map((version) => version.split('.').map(Number));
-  for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] > b[index];
-  return false;
-}
+export const isNewer = isNewerVersion;
 
 // Follows the project's GitHub releases. A newer release is announced to clients; when the runtime around this
 // process is recent enough it can be installed from here: the program goes into the data directory and the
@@ -107,7 +104,7 @@ export class ServiceUpdates {
     const root = this.options.programDir;
     if (!root) return;
     for (const name of names(root))
-      if (/^\d+\.\d+\.\d+(\.|$)/.test(name) && name !== this.version)
+      if (/^\d+\.\d+\.\d+(?:-mod)?(\.|$)/.test(name) && name !== this.version)
         await rm(join(root, name), { recursive: true, force: true });
   }
   stop() {
