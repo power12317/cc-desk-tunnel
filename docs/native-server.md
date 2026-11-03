@@ -33,7 +33,7 @@ cc-desk-tunnel/
 
 官方原版已使用 `service.env` 配置文件，服务启动时由 Node 的 `--env-file` 参数读取；Docker 入口和 Linux 原生部署脚本均使用这种方式。无需手动 `export`、`source` 或修改系统/终端的环境设置。文件内容只在启动的服务进程中由 `process.env` 读取；这仍然是环境变量格式的配置文件，不是 JSON。官方没有服务级 JSON/YAML 解析入口，也没有 `--port`、`--token`、`--config` 等应用参数。[配置实现](../apps/server/src/config.ts)与[官方沿用的 Docker 启动方式](../deploy/docker/entrypoint.sh)可供核对。
 
-沿用目标 Mac 当前安装的 Node.js 和现有 Claude Code，不安装或切换 Node，也不改变 PATH。官方仓库声明的 Node 范围为 `>=24 <25`，这项声明来自上游；现有 Node 26 的兼容性尚未完成验证，不据此要求更换目标机器的 Node，也不改写官方声明或宣称任意版本已获支持。
+沿用目标 Mac 当前安装的 Node.js 和现有 Claude Code，不安装或切换 Node，也不改变 PATH。官方仓库声明的 Node 范围为 `>=24 <25`，这项声明来自上游；本次在 macOS arm64 上用现有代码验证了 Node 26.13.0：服务端依赖安装成功，43 项相关离线测试通过。上游声明可能使 npm 输出 `EBADENGINE` 警告，本次安装实际退出码为 0；不据此要求更换目标机器的 Node，也不改写官方声明或宣称所有历史版本均已验证。
 
 以下操作使用目标机器已经能正常运行 Claude 的 macOS 登录用户。不重新登录、导出/复制凭据或改变 HOME/CLAUDE_CONFIG_DIR、代理和网络出口。
 
