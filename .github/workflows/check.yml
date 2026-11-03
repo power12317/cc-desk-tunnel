@@ -76,7 +76,21 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      - name: Run Windows tests with public diagnostics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          npm test 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/windows-tests.log"
+          $testExit = $LASTEXITCODE
+          if ($testExit) {
+            Get-Content "$env:RUNNER_TEMP/windows-tests.log" |
+              Select-String -Pattern 'not ok|failing tests|ERR_|AssertionError|^test at|✖|ENOENT' |
+              Select-Object -First 25 | ForEach-Object {
+                $line = $_.ToString().Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                Write-Output "::warning title=Windows test diagnostic::$line"
+              }
+          }
+          exit $testExit
   # The SSH service of the macOS client, with the system's own ssh, scp and sftp-server.
   macos:
     runs-on: macos-15
