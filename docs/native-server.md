@@ -29,23 +29,18 @@ cc-desk-tunnel/
 
 以下操作均在**目标 Mac 的项目根目录**执行。不要使用开发机器的绝对路径或 Node 安装路径。
 
-## Node.js 与依赖
+## 官方配置文件与 Node.js
 
-当前项目沿用官方 `>=24 <25` 的 Node.js 约束，Node.js 26 不在已验证范围内。目标机器可以保留 Node 26，并通过 Homebrew 并行安装 Node 24，仅在当前服务终端中选择它：
+官方原版已使用 `service.env` 配置文件，服务启动时由 Node 的 `--env-file` 参数读取；Docker 入口和 Linux 原生部署脚本均使用这种方式。无需手动 `export`、`source` 或修改系统/终端的环境设置。文件内容只在启动的服务进程中由 `process.env` 读取；这仍然是环境变量格式的配置文件，不是 JSON。官方没有服务级 JSON/YAML 解析入口，也没有 `--port`、`--token`、`--config` 等应用参数。[配置实现](../apps/server/src/config.ts)与[官方沿用的 Docker 启动方式](../deploy/docker/entrypoint.sh)可供核对。
 
-```sh
-brew install node@24
-export PATH="$(brew --prefix node@24)/bin:$PATH"
-node --version
-command -v claude
-```
+沿用目标 Mac 当前安装的 Node.js 和现有 Claude Code，不安装或切换 Node，也不改变 PATH。官方仓库声明的 Node 范围为 `>=24 <25`，这项声明来自上游；现有 Node 26 的兼容性尚未完成验证，不据此要求更换目标机器的 Node，也不改写官方声明或宣称任意版本已获支持。
 
-确认 Node 输出 `v24.x.x`，且能够找到目标机器已安装、已登录的 `claude`。继续使用原来的 macOS 登录用户，不重新登录、导出/复制凭据或改变 HOME/CLAUDE_CONFIG_DIR、代理和网络出口。
+以下操作使用目标机器已经能正常运行 Claude 的 macOS 登录用户。不重新登录、导出/复制凭据或改变 HOME/CLAUDE_CONFIG_DIR、代理和网络出口。
 
 只运行服务端、不启用 Web 时，安装服务端依赖即可：
 
 ```sh
-ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --omit=dev \
+npm ci --omit=dev \
   --workspace=@cc-desk-tunnel/server \
   --workspace=@cc-desk-tunnel/protocol
 ```
@@ -101,10 +96,9 @@ EOF
 
 ## 启动与连接
 
-在目标 Mac 的项目根目录，用其自己安装的 Node.js 24 启动：
+在目标 Mac 的项目根目录，直接使用现有 `node` 读取配置文件启动：
 
 ```sh
-export PATH="$(brew --prefix node@24)/bin:$PATH"
 caffeinate -i node --env-file=runtime/.local/service.env apps/server/src/main.ts
 ```
 
