@@ -10,24 +10,39 @@
 
 Windows/macOS/Linux 桌面和 ccdt 客户端继续连接以上服务；Windows 原生服务端不在现有支持范围内。
 
-## 上游现有目录与配置方式
+## 项目内的部署目录
 
-目录依据官方 `v0.3.9` 的实现，不为 macOS 新增固定目录规范：
+macOS 原生部署将本服务的配置、访问密钥、证书和应用数据放在目标机器项目内的 `runtime/.local/`：
 
-| 入口 | 官方既有目录或用途 | 源码依据 |
-| --- | --- | --- |
-| 从源码启动服务 | 未指定 `PROXY_DATA_DIR` 时，数据默认在项目 `.local/sessions/` | [服务入口](../apps/server/src/main.ts) |
-| Linux 原生部署脚本 | `$HOME/.local/share/cc-desk-tunnel/` 下的 `service.env`、`state/`、`tls/server.crt`、`tls/server.key` | [原生部署脚本](../scripts/deploy-linux.mjs) |
-| Linux 原生运行时 | 同一基础目录下的 `runtime/` 保存脚本安装的 Node.js 与 Claude CLI；应用数据另放 `state/` | [运行时安装脚本](../scripts/install-linux.sh) |
-| Docker/Compose | 默认部署配置为项目 `.local/docker.env`；数据目录下包含 `config/service.env`、`tls/`、`state/`、`home/`、`workspace/` | [部署管理脚本](../deploy/manage.sh) |
+```text
+cc-desk-tunnel/
+  runtime/.local/
+    service.env
+    access-keys.json
+    tls/
+      server.crt
+      server.key
+    state/
+```
 
-官方提供 macOS 客户端，但没有 macOS 原生服务端的一键安装器或独立目录规范。本项目的 Mac 支持沿用服务端原有的环境变量和 Node 启动入口；`PROXY_DATA_DIR`、`PROXY_TLS_CERT/KEY` 指定实际数据和证书位置。`--env-file` 指定已有配置文件的位置。此前说明中的 `.local/native.env` 只是自行选取的示例路径，不是官方约定，现已移除；聊天中提出的 `.local/mac-server`、项目根 `config/` 和 `runtime/` 也不是新增的部署标准。
+服务端继续使用上游已有的 `--env-file`、`PROXY_DATA_DIR`、`PROXY_TLS_CERT/KEY` 配置机制。上述位置通过配置指定，不改变上游默认值或 Docker/Compose 部署布局。现有 `.gitignore` 的 `.local/` 规则已覆盖 `runtime/.local/`，配置、密钥、证书和数据不会进入 Git。
 
-## macOS 从源码运行
+以下操作均在**目标 Mac 的项目根目录**执行。不要使用开发机器的绝对路径或 Node 安装路径。
 
-以下操作在目标 Mac 上执行。使用目标机器自己安装的 Node.js 24、Git、系统 `ssh`/`scp` 和已安装、已登录的官方 `claude`。不要为此重新登录、导出/复制凭据、改 HOME/CLAUDE_CONFIG_DIR、代理或网络出口，也不用安装 Linux 环境或虚拟机。
+## Node.js 与依赖
 
-在目标机器的项目根目录安装服务端依赖。不启用 Web 时，无须安装或构建桌面应用：
+当前项目沿用官方 `>=24 <25` 的 Node.js 约束，Node.js 26 不在已验证范围内。目标机器可以保留 Node 26，并通过 Homebrew 并行安装 Node 24，仅在当前服务终端中选择它：
+
+```sh
+brew install node@24
+export PATH="$(brew --prefix node@24)/bin:$PATH"
+node --version
+command -v claude
+```
+
+确认 Node 输出 `v24.x.x`，且能够找到目标机器已安装、已登录的 `claude`。继续使用原来的 macOS 登录用户，不重新登录、导出/复制凭据或改变 HOME/CLAUDE_CONFIG_DIR、代理和网络出口。
+
+只运行服务端、不启用 Web 时，安装服务端依赖即可：
 
 ```sh
 ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --omit=dev \
@@ -35,31 +50,76 @@ ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --omit=dev \
   --workspace=@cc-desk-tunnel/protocol
 ```
 
-沿用目标机器实际使用的配置文件。下面的绝对路径是待替换项，不代表新的默认目录；已有部署应沿用它自己的路径、访问密钥、证书和数据，不重新生成或搬迁：
+## 首次配置
 
-```dotenv
-PROXY_ADAPTER=claude-code
-PROXY_HOST=127.0.0.1
-PROXY_PORT=8787
-PROXY_DATA_DIR=/absolute/path/to/existing/state
-CLAUDE_PATH=claude
-PROXY_ACCESS_KEYS_FILE=/absolute/path/to/access-keys.json
-PROXY_TLS_MODE=direct
-PROXY_TLS_CERT=/absolute/path/to/server.crt
-PROXY_TLS_KEY=/absolute/path/to/server.key
-PROXY_RELEASE_REPO=none
-PROXY_WEB_ENABLED=0
-```
-
-`CLAUDE_PATH=claude` 沿用官方从 PATH 查找 CLI 的默认行为，也可填写目标机器上 `command -v claude` 得到的路径。密钥文件格式见[访问空间](access-spaces.md)。只使用单一访问密钥时，可沿用官方 `PROXY_TOKEN`，无须配置密钥文件。
-
-路径有空格时 Node 的 dotenv 支持整行值，建议加引号。证书和私钥是本服务的 TLS 身份，位置由现有配置指定；首次部署按[部署安全说明](deployment.md)准备并核对目标机器证书的指纹。先保持回环监听，面向局域网提供服务时再明确指定监听地址。
-
-管理员在目标 Mac 上已经能正常运行 Claude 的同一个登录用户终端中手动启动，将参数换成目标机器实际配置文件的路径：
+以下命令只创建缺失文件。已有部署先按下文迁移，保留原空间 ID、token、证书及历史数据。
 
 ```sh
-node --env-file=/absolute/path/to/service.env apps/server/src/main.ts
+mkdir -p runtime/.local/tls runtime/.local/state
+chmod 700 runtime/.local runtime/.local/tls runtime/.local/state
+
+(
+  umask 077
+  if [ ! -f runtime/.local/tls/server.key ]; then
+    openssl genrsa -out runtime/.local/tls/server.key 3072
+  fi
+  if [ ! -f runtime/.local/tls/server.crt ]; then
+    openssl req -new -x509 -sha256 -days 365 \
+      -key runtime/.local/tls/server.key \
+      -out runtime/.local/tls/server.crt \
+      -subj "/CN=cc-desk-tunnel.local"
+  fi
+  if [ ! -f runtime/.local/access-keys.json ]; then
+    cat > runtime/.local/access-keys.json <<EOF
+[
+  {"id":"team-a","token":"$(openssl rand -hex 32)"},
+  {"id":"team-b","token":"$(openssl rand -hex 32)"}
+]
+EOF
+  fi
+  if [ ! -f runtime/.local/service.env ]; then
+    cat > runtime/.local/service.env <<EOF
+PROXY_ADAPTER=claude-code
+PROXY_HOST=0.0.0.0
+PROXY_PORT=8787
+PROXY_DATA_DIR=runtime/.local/state
+CLAUDE_PATH="$(command -v claude)"
+PROXY_ACCESS_KEYS_FILE=runtime/.local/access-keys.json
+PROXY_TLS_MODE=direct
+PROXY_TLS_CERT=runtime/.local/tls/server.crt
+PROXY_TLS_KEY=runtime/.local/tls/server.key
+PROXY_RELEASE_REPO=none
+PROXY_WEB_ENABLED=0
+EOF
+  fi
+)
 ```
+
+`0.0.0.0` 接受局域网连接；仅供本机使用时填 `127.0.0.1`。相对路径均相对于启动时的项目根目录。两个 token 由目标 Mac 随机生成；同一空间的设备使用同一 token，不同空间的设备使用不同 token。密钥轮换与旧数据归属见[访问空间](access-spaces.md)。
+
+已有部署迁移时先停服并备份，将原配置、密钥文件、完整证书对和整个应用数据目录复制到对应位置，再将配置中的数据、密钥文件、证书路径改成上述 `runtime/.local/...`。保留原 `CLAUDE_PATH`、token、空间 ID 和其他设置。验证数据与连接正常后再清理旧部署文件；不要同时启动两个进程读写同一数据目录。
+
+## 启动与连接
+
+在目标 Mac 的项目根目录，用其自己安装的 Node.js 24 启动：
+
+```sh
+export PATH="$(brew --prefix node@24)/bin:$PATH"
+caffeinate -i node --env-file=runtime/.local/service.env apps/server/src/main.ts
+```
+
+`caffeinate` 仅在服务运行期间防止空闲休眠。保持终端打开，Ctrl-C 停止本次服务。重新启动直接使用上述命令，不重复初始化。
+
+客户端使用官方 `0.3.9`，填写 `wss://目标Mac的局域网IP:8787/ws`。在目标 Mac 上读取实际证书指纹和访问密钥：
+
+```sh
+openssl x509 -in runtime/.local/tls/server.crt -noout -fingerprint -sha256
+open -a TextEdit runtime/.local/access-keys.json
+```
+
+自签证书有效期一年，客户端填写输出中 `=` 后的 SHA256 指纹。证书属于本服务的 TLS 身份，与 Claude 登录和 SSH 临时密钥不同；其他入口方式见[部署说明](deployment.md)。
+
+停服后备份或清理本服务的部署文件时，统一处理 `runtime/.local/`，其中包含访问密钥、证书私钥及会话数据。
 
 服务不改 HOME/CLAUDE_CONFIG_DIR，不读取或导出钥匙串凭据，不复用或接管已经打开的 CLI 进程。官方 SDK 用 `pathToClaudeCodeExecutable` 创建独立正常会话；PTY 也使用同一路径。项目的 SQLite、workspace、SSH 和运行数据在 `PROXY_DATA_DIR`，CLI 的原生上下文仍由官方 CLI 放在现有用户环境。
 
