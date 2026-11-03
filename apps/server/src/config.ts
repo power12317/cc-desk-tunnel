@@ -1,11 +1,21 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { AccessKey } from './access-spaces.ts';
 import type { ServerOptions } from './server.ts';
 
 function port(value: string | undefined, fallback: number, name: string) {
   const number = Number(value ?? fallback);
   if (!Number.isInteger(number) || number < 1 || number > 65535) throw new Error(`Invalid ${name}`);
   return number;
+}
+
+function accessKeys(file?: string): AccessKey[] | undefined {
+  if (!file) return undefined;
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    throw new Error('Unable to read access keys JSON file.');
+  }
 }
 
 // The proxy's own settings must not leak into the native CLI or its shells: they inherit this process environment.
@@ -24,8 +34,14 @@ export function clearServiceVariables(env: NodeJS.ProcessEnv) {
       delete env[name];
 }
 
-export function environmentConfig(env: NodeJS.ProcessEnv, defaultDataDir: string) {
+export function environmentConfig(
+  env: NodeJS.ProcessEnv,
+  defaultDataDir: string,
+  platform: NodeJS.Platform = process.platform,
+) {
   const native = env.PROXY_ADAPTER === 'claude-code';
+  if (env.PROXY_WEB_ENABLED !== undefined && !['0', '1'].includes(env.PROXY_WEB_ENABLED))
+    throw new Error('PROXY_WEB_ENABLED must be 0 or 1.');
   const reverseProxy = env.PROXY_TLS_MODE === 'reverse-proxy';
   if (env.PROXY_TLS_MODE && !['direct', 'reverse-proxy'].includes(env.PROXY_TLS_MODE))
     throw new Error('PROXY_TLS_MODE must be direct or reverse-proxy.');
@@ -42,6 +58,10 @@ export function environmentConfig(env: NodeJS.ProcessEnv, defaultDataDir: string
     throw new Error('Direct mode requires PROXY_TLS_CERT and PROXY_TLS_KEY.');
   const options: ServerOptions = {
     token: env.PROXY_TOKEN ?? '',
+    accessKeys: accessKeys(env.PROXY_ACCESS_KEYS_FILE),
+    legacySpaceId: env.PROXY_LEGACY_SPACE_ID,
+    allowRemoteAdministration: !env.PROXY_ACCESS_KEYS_FILE && platform === 'linux',
+    webEnabled: env.PROXY_WEB_ENABLED === undefined ? undefined : env.PROXY_WEB_ENABLED === '1',
     dataDir: resolve(env.PROXY_DATA_DIR ?? defaultDataDir),
     host: env.PROXY_HOST ?? (native && !reverseProxy ? '0.0.0.0' : '127.0.0.1'),
     reverseProxy,
@@ -59,6 +79,8 @@ export function environmentConfig(env: NodeJS.ProcessEnv, defaultDataDir: string
     claude: native
       ? {
           executable: env.CLAUDE_PATH ?? 'claude',
+          managedRuntime:
+            platform === 'linux' && !!env.PROXY_RUNTIME_DIR && !!env.PROXY_PROGRAM_DIR,
           model: env.CLAUDE_MODEL,
           settingsPath: env.CLAUDE_SETTINGS_PATH,
           contextRetentionDays: retention,
@@ -66,7 +88,11 @@ export function environmentConfig(env: NodeJS.ProcessEnv, defaultDataDir: string
       : undefined,
   };
   // Releases are followed only by a real service; the entry script of the image says where programs and runtime are.
-  if (native && env.PROXY_RELEASE_REPO !== 'none')
+  if (
+    native &&
+    env.PROXY_RELEASE_REPO !== 'none' &&
+    (platform === 'linux' || env.PROXY_RELEASE_REPO)
+  )
     options.updates = {
       repository: env.PROXY_RELEASE_REPO ?? 'sun168567/cc-desk-tunnel',
       token: env.PROXY_RELEASE_TOKEN || undefined,

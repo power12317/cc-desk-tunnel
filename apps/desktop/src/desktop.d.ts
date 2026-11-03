@@ -67,9 +67,9 @@ declare global {
       saveLogin: (login: import('./LoginPage.tsx').ConnectionForm) => Promise<void>;
       loadDrafts: () => Promise<Record<string, string>>;
       saveDrafts: (drafts: Record<string, string>) => Promise<void>;
-      loadSchedules: (initial: string) => Promise<{ path: string; text: string }>;
-      saveSchedules: (text: string) => Promise<void>;
-      onSchedulesChanged: (callback: (text: string) => void) => () => void;
+      loadSchedules: (initial: string, scope?: string) => Promise<{ path: string; text: string }>;
+      saveSchedules: (text: string, scope?: string) => Promise<void>;
+      onSchedulesChanged: (callback: (text: string) => void, scope?: string) => () => void;
       windowSettings: () => Promise<{ closeToTray: boolean }>;
       setWindowSettings: (values: { closeToTray: boolean }) => Promise<void>;
       // A system notification, shown unless the window is in front (`always` shows it regardless). `attention`

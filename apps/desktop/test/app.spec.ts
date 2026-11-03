@@ -368,7 +368,14 @@ test('a scheduled task is edited, sent to its session when due, and can open a s
   await expect(row).toContainText(name);
   await expect(row).toContainText('下次');
   expect(
-    await page.evaluate(() => JSON.parse(localStorage.getItem('proxy-schedules')!).说明.length),
+    await page.evaluate(
+      () =>
+        JSON.parse(
+          localStorage.getItem(
+            Object.keys(localStorage).find((key) => key.startsWith('proxy-schedules:'))!,
+          )!,
+        ).说明.length,
+    ),
   ).toBeGreaterThan(0);
   // Nothing is sent early; an hour later the task is due.
   await page.clock.fastForward('30:00');

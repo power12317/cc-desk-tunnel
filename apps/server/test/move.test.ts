@@ -97,14 +97,14 @@ test('a session taken to another computer tells Claude of the computer and its d
   // The same path on another computer is still another place.
   store.move(session.id, 'D:\\项目 甲', laptop);
   const notice = store.notice(session.id);
-  assert.match(notice, /another of their computers, "笔记本 \\"二\\""/);
+  assert.match(notice, /this session moved to another workspace/);
   assert.match(notice, /is now "D:\\\\项目 甲" \(it was "D:\\\\项目 甲"\)/);
   assert.equal(store.notice(session.id), '');
   // A move on that computer afterwards is only a move.
   store.move(session.id, 'E:\\别处', laptop);
-  assert.doesNotMatch(store.notice(session.id), /computers/);
+  assert.match(store.notice(session.id), /workspace directory changed/);
   store.move(session.id, 'D:\\项目 甲', device);
-  assert.match(store.notice(session.id), /"台式机"/);
+  assert.match(store.notice(session.id), /this session moved to another workspace/);
 });
 
 test('a session from before computers were told apart becomes that of the first to use it, unannounced', (t) => {
@@ -135,10 +135,10 @@ test('a session taken to a computer of another system is told how that one runs 
   const mac = { id: randomUUID(), name: 'MacBook', platform: 'darwin' as const };
   store.move(session.id, '/Users/me/项目', mac);
   const notice = store.notice(session.id);
-  assert.match(notice, /From now on the device is that computer: macOS\./);
+  assert.match(notice, /Workspace: macOS\./);
   assert.match(notice, /is now "\/Users\/me\/项目" \(it was "D:\\\\项目 甲"\)/);
-  assert.match(notice, /replaces what was said of scripts and command lines/);
-  assert.match(notice, /Begin it with cd -- '\/Users\/me\/项目'\./);
+  assert.match(notice, /RemoteCommand selects the workspace zsh\/bash/);
+  assert.match(notice, /Every script MUST begin with cd -- '\/Users\/me\/项目'\./);
   assert.doesNotMatch(notice, /PowerShell/);
   assert.equal(store.notice(session.id), '');
   // The prompt stays what it was until a compaction: only then does it describe the Mac.
@@ -150,7 +150,7 @@ test('a session taken to a computer of another system is told how that one runs 
   store.move(session.id, '/Users/me/别处', mac);
   assert.doesNotMatch(store.notice(session.id), /scripts and command lines/);
   store.move(session.id, 'D:\\项目 甲', device);
-  assert.match(store.notice(session.id), /that computer: Windows\..*Set-Location -LiteralPath/s);
+  assert.match(store.notice(session.id), /Workspace: Windows\..*Set-Location -LiteralPath/s);
   store.compacted(session.id);
   store.move(session.id, '/Users/me/项目', mac);
   assert.equal(store.promptValues(session.id).platform, 'darwin');

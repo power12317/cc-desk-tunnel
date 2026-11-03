@@ -107,6 +107,8 @@ export type HistoryState = {
 export type ClientState = {
   status: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
   connectionId: string | null;
+  scope: string | null;
+  remoteAdministration: boolean;
   // The computer this client signed in as; a session's commands run on the one it is on.
   device: Device | null;
   browser: Extract<ServerMessage, { type: 'ready' }>['browser'] | null;
@@ -151,6 +153,8 @@ export class ProxyClient {
   state: ClientState = {
     status: 'disconnected',
     connectionId: null,
+    scope: null,
+    remoteAdministration: false,
     device: null,
     browser: null,
     devices: [],
@@ -178,6 +182,7 @@ export class ProxyClient {
   socket: WebSocket | null = null;
   credentials: {
     url: string;
+    serverIdentity?: string;
     token: string;
     device: Device | null;
     browser?: () => void;
@@ -234,6 +239,7 @@ export class ProxyClient {
     device: Device,
     reconnect = true,
     bridge?: () => Promise<string>,
+    serverIdentity = url,
   ) {
     const address = new URL(url);
     if (
@@ -251,7 +257,14 @@ export class ProxyClient {
       throw new Error('当前离线原型仅连接本机环回服务。');
     if (token.trim().length < 24) throw new Error('服务凭据至少 24 个字符。');
     this.disconnect();
-    this.credentials = { url: address.toString(), token: token.trim(), device, reconnect, bridge };
+    this.credentials = {
+      url: address.toString(),
+      token: token.trim(),
+      device,
+      reconnect,
+      bridge,
+      serverIdentity,
+    };
     this.established = false;
     this.cacheOrder = [];
     this.update({
@@ -378,6 +391,7 @@ export class ProxyClient {
     this.socket = socket;
     const timeout = setTimeout(() => socket.close(), 50000);
     socket.onopen = () => {
+      if (this.socket !== socket) return;
       if (credentials.browser) {
         socket.send(JSON.stringify({ type: 'web.auth', protocolVersion: PROTOCOL_VERSION }));
         return;
@@ -409,11 +423,15 @@ export class ProxyClient {
         this.established = true;
         clearTimeout(timeout);
         this.retryAttempt = 0;
+        const scope = `${credentials.serverIdentity ?? credentials.url}|${message.spaceId ?? 'default'}`;
+        if (this.state.scope && this.state.scope !== scope) this.clearWorkspace();
         const selectedId = message.sessions.some((session) => session.id === this.state.selectedId)
           ? this.state.selectedId
           : null;
         this.update({
           status: 'connected',
+          scope,
+          remoteAdministration: message.remoteAdministration ?? !message.spaceId,
           connectionId: message.connectionId,
           browser: message.browser ?? null,
           sessions: message.sessions,
@@ -625,7 +643,36 @@ export class ProxyClient {
     socket?.close();
     this.rejectPending();
     this.retryAttempt = 0;
-    this.update({ status: 'disconnected', connectionId: null });
+    this.clearWorkspace();
+    this.update({ status: 'disconnected', connectionId: null, scope: null });
+  }
+  private clearWorkspace() {
+    clearTimeout(this.streamTimer);
+    this.streamTimer = undefined;
+    this.streamEvents = [];
+    this.cacheOrder = [];
+    this.activity.clear();
+    this.ahead = Infinity;
+    this.results = new Map();
+    this.update({
+      device: null,
+      browser: null,
+      devices: [],
+      sessions: [],
+      events: {},
+      live: {},
+      history: {},
+      selectedId: null,
+      capabilities: null,
+      metrics: null,
+      account: null,
+      progress: {},
+      remoteAdministration: false,
+      model: null,
+      release: null,
+      service: null,
+      update: null,
+    });
   }
   private rejectPending() {
     for (const [requestId, request] of this.pending) {
@@ -818,9 +865,10 @@ export class ProxyClient {
   }
   // Data replies arrive just before their response frame.
   async fetch<T extends keyof Replies>(command: Extract<NewCommand, { type: T }>) {
+    const results = this.results;
     const response = await this.request(command);
-    const result = this.results.get(response.requestId);
-    this.results.delete(response.requestId);
+    const result = results.get(response.requestId);
+    results.delete(response.requestId);
     if (!result) throw new Error('服务没有返回数据。');
     return result as Extract<ServerMessage, { type: Replies[T] }>;
   }

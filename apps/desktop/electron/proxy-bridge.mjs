@@ -315,7 +315,7 @@ export async function openProxyBridge(
           .then((ssh) => {
             current.ssh = ssh;
             if (closed || remote.readyState !== WebSocket.OPEN) return;
-            current.channels = openChannels(message, ssh.port, dialChannel, fail);
+            current.channels = openChannels({ ...message, token }, ssh.port, dialChannel, fail);
             remote.send(JSON.stringify(ssh.credentials));
           })
           .catch((error) => fail(error.message));
@@ -325,6 +325,11 @@ export async function openProxyBridge(
           current.channels?.open(message.channelId);
       } else if (message.type === 'ready' && message.adapter === 'claude-code') {
         nativeReady = message;
+        if (binaries.workspaceEnvironment)
+          binaries.environment = {
+            ...binaries.environment,
+            ...binaries.workspaceEnvironment(message.spaceId ?? 'default'),
+          };
         release = message.client;
       } else if (message.type === 'tunnel.ready') {
         if (!offerReceived || message.connectionId !== nativeReady?.connectionId) {

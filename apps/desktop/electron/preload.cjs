@@ -41,10 +41,12 @@ contextBridge.exposeInMainWorld('desktop', {
   saveLogin: (login) => ipcRenderer.invoke('login:save', login),
   loadDrafts: () => ipcRenderer.invoke('drafts:load'),
   saveDrafts: (drafts) => ipcRenderer.invoke('drafts:save', drafts),
-  loadSchedules: (initial) => ipcRenderer.invoke('schedules:load', initial),
-  saveSchedules: (text) => ipcRenderer.invoke('schedules:save', text),
-  onSchedulesChanged: (callback) => {
-    const listener = (_event, text) => callback(text);
+  loadSchedules: (initial, scope) => ipcRenderer.invoke('schedules:load', initial, scope),
+  saveSchedules: (text, scope) => ipcRenderer.invoke('schedules:save', text, scope),
+  onSchedulesChanged: (callback, scope) => {
+    const listener = (_event, text, changedScope) => {
+      if (scope === undefined || scope === changedScope) callback(text);
+    };
     ipcRenderer.on('schedules:changed', listener);
     return () => ipcRenderer.removeListener('schedules:changed', listener);
   },

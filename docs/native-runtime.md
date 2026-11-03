@@ -16,9 +16,9 @@
 
 原生控制终端另外用 node-pty 启动同一 CLI 交互式入口，不走 SDK、不设置 SDK 入口标记、不启动通用 shell。正常 flags / 私有提供方 env / Windows SSH 提示词属于外层配置；用户已有 settings.env 原样复用。键盘与画面经 WSS 接至 xterm，不解释 OAuth 内容或存储终端日志。当前终端使用独立原生会话，不能声称已替换同一图形会话的 CLI 壳；图形历史不会包括终端问答。
 
-登录 / 退出 / 状态由服务端驱动官方 `claude auth login / logout / status`，授权链接与回填代码经桌面端转交，凭据只由 CLI 自己读写。官方 `auth login` 不记下首次引导已完成（2.1.286 实测），交互式终端因此会让已登录账号重走主题与登录。
+单密钥 Linux 服务保留通过官方 `claude auth login / logout / status` 的原有管理入口。多密钥共享账号及 macOS 原生复用环境由本机管理员维护登录、退出和全局配置，普通连接仅能读取账号状态，见[访问空间](access-spaces.md)。
 
-**代理唯一直接改动 CLI 状态文件的地方**（`src/native-onboarding.ts`）：终端启动前，若官方凭据文件里已有登录而 `~/.claude.json` 缺少 `hasCompletedOnboarding`，服务端补上这一项；判断时只看凭据是否存在，不读取、不复制也不转发其内容，未登录时不动，引导照常出现。除此之外，代理对 CLI 的配置只通过官方 settings 文件与命令行参数表达。
+托管 Linux 容器保留 `native-onboarding.ts` 的首次引导兼容：仅在明确的托管运行时中，终端启动或登录成功后补写容器自己的 `hasCompletedOnboarding`。macOS 和非托管原生环境不调用它，不读取凭据或写入已有 `.claude.json`。SDK/CLI 继续自行读取原登录上下文。
 
 每次模型调用的统计来自 CLI 自带的 OpenTelemetry 日志导出（`claude_code.api_request`）：服务在环回地址起接收端，只给自己启动的 CLI 进程设置 `CLAUDE_CODE_ENABLE_TELEMETRY` 与 `OTEL_*LOGS*` 变量，只保存模型、token、费用估算、耗时与会话 ID，不保存账号标识和内容；未开启提示词 / 回复导出。费用是 CLI 按 API 价格的估算，不是订阅账单。
 
@@ -47,8 +47,8 @@ Claude Code 原生存储是模型会话上下文的唯一权威，包含原生�
 - 恢复前通过官方 `getSessionInfo` 检查原生记录存在；缺失则明确失败，不静默另开会话，不用代理事件假装恢复。
 - 运行结束通过官方接口确认记录已保存，并同步保存状态到 GUI。压缩由 CLI 执行，客户端只展示实际公开的压缩 / 状态事件。
 - SSH 配置里一台设备有两个主机名。`device` 原样执行一条命令行（Windows 上由 cmd.exe 解析），scp / sftp 也用它；`device-script` 是同一台设备加上一条固定的 `RemoteCommand`：把标准输入整段读成 PowerShell 7 脚本再执行，UTF-8、纯文本报错、保留退出码。提示词让 Claude 把脚本用 here-document 送给 `device-script`，脚本不经过任何一层命令行，不需要转义或编码，也没有长度限制。就绪探测走的是同一个主机名。PowerShell 自带的 `-Command -` 与 `-File -` 逐行处理标准输入，跨行的块会丢失，所以不用。
-- 每台设备另有一个固定的入口 `devices/<device-id>/`：端口和配置路径在设备在线及宽限期内不变，密钥随每次连接更换；会话的 SSH 配置指向它，所以重连对正在运行的 CLI 没有任何可见变化，设备不在时新发起的命令在入口处等待（最长一分钟）。
-- 临时 SSH config / key 在 `connections/<connection-id>/`；断连回收这个目录，不碰 `native/` 下的工作目录、CLI 原生 transcript 或记忆。系统提示词里写的不是这个目录，而是每个会话固定的 `session-ssh/<session-id>.conf`，它只有一行 `Include`，每次运行前指向当前连接的配置：连接目录每次重连都换，提示词若跟着变，模型侧的提示缓存从系统提示词之后全部失效，整段对话要重新写入缓存。重连不丢失会话，也不改变提示词。
+- 每台设备另有一个固定的入口 `devices/<space-id>.<device-id>/`：端口和配置路径在设备在线及宽限期内不变，密钥随每次连接更换；会话的 SSH 配置指向它，所以重连对正在运行的 CLI 没有任何可见变化，设备不在时新发起的命令在入口处等待（最长一分钟）。
+- 临时 SSH config / key 在 `connections/<connection-id>/`；断连回收这个目录，不碰 `native/` 下的工作目录、CLI 原生 transcript 或记忆。系统提示词里写的不是这个目录，而是每个会话固定的 `session-ssh/<session-id>.conf`，每次运行前原子写入设备 door 的配置文本，不包含私钥内容。避免 `Include` 对反斜杠等路径字符作 glob 展开；密钥文件仍只存在设备/连接目录。连接目录每次重连都换，提示词若跟着变，模型侧的提示缓存从系统提示词之后全部失效，整段对话要重新写入缓存。重连不丢失会话，也不改变提示词。
 
 代理 `PROXY_DATA_DIR/sessions.sqlite` 只是 GUI 事件、项目绑定、审批偏好与索引的展示镜像；Windows 只有有界会话内容缓存与草稿，打开会话按页拉取，不重放所有 token。镜像里一段输出只存一条；输出途中的片段只转发给正在看的窗口，不落盘。不应把“界面历史存在”当作“原生上下文存在”。
 

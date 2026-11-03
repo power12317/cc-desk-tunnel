@@ -4,6 +4,8 @@ macOS 上的客户端与 Windows 上的是同一套界面和同一条连接，�
 
 需要 macOS 13 或更新的系统，Apple 芯片与 Intel 各有一个安装包。两端版本要一致，与 Windows 相同。
 
+本页说明 macOS 客户端。Mac mini 等设备直接承载服务端时，见[macOS / Linux 原生服务](native-server.md)；原有 Docker 部署仍然可用。
+
 ## 安装与首次打开
 
 安装包没有 Apple 开发者签名，也没有公证，系统第一次打开时会拦下它：

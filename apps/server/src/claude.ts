@@ -9,7 +9,7 @@ import type {
   NativeMetrics,
   PermissionMode,
 } from '@cc-desk-tunnel/protocol';
-import { deviceTerms } from './device-terms.ts';
+import { bashDoubleQuoted, deviceTerms } from './device-terms.ts';
 import { ClaudeStream } from './claude-stream.ts';
 import type { SshConnection } from './tunnel.ts';
 import { loginOf, nativeCapabilities, nativeMetrics, Quotas } from './native-controls.ts';
@@ -28,6 +28,8 @@ function thinkingShown() {
 
 export type ClaudeOptions = {
   executable: string;
+  // Only the managed Linux runtime may complete its own first-run state.
+  managedRuntime?: boolean;
   model?: string;
   settingsPath?: string;
   maxTurns?: number;
@@ -94,16 +96,14 @@ export function remotePrompt(
 ) {
   const terms = deviceTerms(platform, projectPath);
   return [
-    "The user's projects are on their own computer, the device, NOT on this Linux host, which only runs Claude Code and has no copy of them.",
-    `Device: ${terms.name}. Project directory: ${JSON.stringify(projectPath)}.`,
-    `Do all project reads, edits, searches and commands on the device with your native Bash tool over SSH, with the configuration ${JSON.stringify(ssh.configPath)}. Do not use this host's Read/Edit tools on project files, and do not print, read into conversation or copy the key the configuration names.`,
-    `Send a script on standard input, as a quoted Bash here-document: ssh -F ${JSON.stringify(ssh.configPath)} device-script <<'PS' ... PS. ${terms.script}`,
-    `device-script is the host device with one fixed command, which the configuration shows as RemoteCommand, and takes none of its own. ${terms.command}`,
-    'If the device is unreachable, say so; never fall back to this host. After an interruption report results as unknown; do not repeat side effects on your own.',
-    'To look at a picture on the device, such as a pasted screenshot or an attached image, copy that one file with scp to a temporary file on this host, open it with the Read tool, and delete the copy afterwards. That is the only use of Read on this host for a file from the device.',
-    'Commands may run concurrently. One that blocks holds the turn until its Bash timeout: size the timeout to the work, and run anything long-lived, such as a dev server or watcher, as a background Bash task. Do not count on a process outliving the ssh command that started it, nor on ending the command to stop it: keep the command running for as long as the process is needed, and stop the process itself on the device.',
-    `Scheduled and recurring prompts are sent by the desktop client, not by cron on this host: edit the UTF-8 JSON file whose path is in the device's CC_DESK_TUNNEL_SCHEDULES environment variable (its "说明" field documents the format; changes apply within seconds). This session's ID for a task that continues it: ${sessionId}.`,
-  ].join('\n');
+    `Workspace: ${terms.name}, ${projectPath}.\nAccess: local SSH endpoint; config ${ssh.configPath}.\nSession: ${sessionId}.`,
+    'All project reads, edits, searches, builds, tests and commands MUST use Bash over SSH with this config. Direct local Read/Edit of project files is prohibited, except for temporary image inspection below.',
+    `Scripts MUST use ssh -F ${bashDoubleQuoted(ssh.configPath)} device-script with a quoted heredoc ${terms.script}`,
+    `Ordinary command lines and SCP/SFTP MUST use alias device. ${terms.command} Image inspection MUST copy only the required image with SCP to a local temporary file, use Read, then delete the copy. Other direct local Read of workspace files is prohibited.`,
+    'Commands MUST use appropriate Bash timeouts, including when run concurrently. Long-lived services/watchers MUST use background Bash tasks that keep SSH open for the required lifetime. Stopping a program MUST explicitly stop its workspace process. Assuming SSH closure guarantees either survival or termination is prohibited.',
+    'An unavailable endpoint MUST be reported; local fallback is prohibited. Interrupted operations MUST be reported as outcome unknown. Their state MUST be verified before repeating side effects. SSH private keys MUST NOT be displayed, included in conversation or copied.',
+    'Schedules MUST use the workspace UTF-8 JSON file identified by CC_DESK_TUNNEL_SCHEDULES and follow its "说明" field. Changes apply within seconds. The application handles scheduled prompts; local cron is prohibited. Continuation tasks MUST use this session ID.',
+  ].join('\n\n');
 }
 
 // The Linux working directory of a session's project, which its sessions share as they would the project's own
@@ -131,7 +131,7 @@ export async function runClaude(
   options: ClaudeOptions,
   run: ClaudeRun,
 ): Promise<'completed' | 'failed' | 'cancelled'> {
-  if (process.platform === 'win32') throw new Error('Native adapter must run on Linux.');
+  if (process.platform === 'win32') throw new Error('Native adapter requires macOS or Linux.');
   const mapper = new ClaudeStream(run.emit, run.permissionMode, run.effort);
   const cwd = prepareNativeDirectory(options, run.dataDir, run.nativeRoot);
   if (run.resume && !(await getSessionInfo(run.sessionId, { dir: cwd }))) {

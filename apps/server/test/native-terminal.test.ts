@@ -120,7 +120,7 @@ test('control terminal launches the official CLI directly with remote guidance a
     { configPath: '/private/ssh.conf' },
   );
   assert.ok(args.includes('--append-system-prompt'));
-  assert.ok(args.some((arg) => arg.includes('D:\\\\项目')));
+  assert.ok(args.some((arg) => arg.includes('D:\\项目')));
   assert.ok(args.includes('provider'));
   assert.ok(args.includes('high'));
   assert.ok(!args.includes('--resume') && !args.includes('--session-id'));

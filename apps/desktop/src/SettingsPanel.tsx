@@ -253,7 +253,7 @@ export default function SettingsPanel({ client }: { client: ProxyClient }) {
       return (
         <input
           aria-label={field.title}
-          disabled={saving}
+          disabled={saving || !client.state.remoteAdministration}
           value={text}
           placeholder={field.placeholder}
           maxLength={200}
@@ -280,7 +280,7 @@ export default function SettingsPanel({ client }: { client: ProxyClient }) {
     return (
       <select
         aria-label={field.title}
-        disabled={saving}
+        disabled={saving || !client.state.remoteAdministration}
         value={value === null ? '' : String(value)}
         onChange={({ target }) =>
           void save({

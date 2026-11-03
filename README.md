@@ -60,6 +60,8 @@ Claude Code（简称 CC）运行在一台 Linux 服务器上；项目代码、�
 
 ## 快速开始
 
+以下快速开始使用 Docker/Compose。已有 Claude Code 安装与登录的 Mac mini 或 Linux 原生服务，见[原生服务运行方式](docs/native-server.md)；多台设备按服务密钥共享或隔离项目与话题，见[访问空间](docs/access-spaces.md)。
+
 需要：一台有公网 IP 或域名的 Linux 服务器（x86_64；arm64 为实验性支持。推荐 Ubuntu，已安装 Docker），和一台 Windows 10 / 11 x64 电脑。macOS 与 Linux 上也有客户端，目前是实验性支持。
 
 **服务器不需要高配。** 编译、测试和各种开发工具都在 Windows 本机运行，服务器上只有 Claude Code 和一个轻量的代理服务，2 核 1 GB 内存的入门机型就能运行。只有打算让 Claude 直接在服务器上编译或跑重负载时，才需要按那些任务选配置。
@@ -193,6 +195,7 @@ macOS 与 Linux 的安装包在同一个发布页，安装方法见 [macOS 客�
 | --- | --- |
 | [部署操作手册](deploy/README.md) | 安装、升级、三种 TLS 入口、备份恢复、日常运维 |
 | [部署与安全边界](docs/deployment.md) | 端口、证书、凭据、数据与信任边界 |
+| [访问空间](docs/access-spaces.md) · [macOS / Linux 原生服务](docs/native-server.md) | 密钥配置、旧数据归属、同密钥跨设备操作、复用现有 CLI 与登录 |
 | [浏览器访问](docs/server-web.md) | 可选 Web 工作台、登录、域名与路径、证书和反向代理 |
 | [安全说明](SECURITY.md) | 威胁模型、已有防护、已知不足、漏洞报告 |
 | [架构](docs/architecture.md) | 组成、连接建立过程、关键设计决定 |

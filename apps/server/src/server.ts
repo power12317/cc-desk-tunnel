@@ -1,4 +1,4 @@
-import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { createReadStream, mkdirSync, readFileSync, rmSync, unwatchFile, watchFile } from 'node:fs';
 import { createServer } from 'node:http';
 import { totalmem } from 'node:os';
@@ -77,6 +77,8 @@ import { ServiceUpdates, serviceVersion } from './updates.ts';
 import type { UpdateOptions } from './updates.ts';
 import { UsageLog, createUsageReceiver, telemetryEnvironment } from './usage.ts';
 import { WebAccess } from './web-access.ts';
+import { AccessSpaces } from './access-spaces.ts';
+import type { AccessKey } from './access-spaces.ts';
 import { browserActivity, browserCommands, isWebCommand } from './web-commands.ts';
 
 type Peer = {
@@ -84,6 +86,7 @@ type Peer = {
   id: string;
   address: string;
   authenticated: boolean;
+  space?: string;
   browser?: string;
   origin?: string;
   // A browser that came through a trusted proxy, which serves it the proxy's certificate.
@@ -164,6 +167,7 @@ const INTERRUPTS = new Set(['\x1b', '\x03', '\x1b[27u', '\x1b[99;5u']);
 // go through, and the wait that ends its runs if it stays away.
 type Seat = {
   device: string;
+  space: string;
   peers: Set<Peer>;
   door?: Door;
   opening?: Promise<void>;
@@ -173,6 +177,11 @@ type Login = { process: NativeLogin; owner: Peer; url?: string };
 type CommandOf<T extends Command['type']> = Extract<Command, { type: T }>;
 export type ServerOptions = {
   token: string;
+  accessKeys?: AccessKey[];
+  legacySpaceId?: string;
+  // Legacy single-key Linux deployments retain remote maintenance; shared spaces keep it local.
+  allowRemoteAdministration?: boolean;
+  webEnabled?: boolean;
   dataDir: string;
   stepMs?: number;
   allowedOrigins?: string[];
@@ -205,13 +214,19 @@ const CONTINUE =
   'Continue from where the last turn stopped. A command that was running when it stopped may or may not have taken effect: check its result before repeating it.';
 
 export function createProxyServer(options: ServerOptions) {
-  if (options.token.length < 24)
-    throw new Error('PROXY_TOKEN must contain at least 24 characters.');
+  const spaces = new AccessSpaces(options.token, options.accessKeys);
+  if (options.legacySpaceId && !spaces.ids.has(options.legacySpaceId))
+    throw new Error('The legacy space must have a configured access key.');
+  if (options.allowRemoteAdministration && spaces.ids.size > 1)
+    throw new Error('Remote administration is only available in an embedded single-space service.');
   if (options.claude && (!options.tunnel || (!options.tls && !options.reverseProxy)))
     throw new Error(
       'Native mode requires TLS or explicit reverse proxy mode, and the execution channel.',
     );
-  const store = new SessionStore(options.dataDir);
+  const store = new SessionStore(
+    options.dataDir,
+    options.legacySpaceId ?? (options.token ? 'default' : '__unassigned__'),
+  );
   const usage = new UsageLog(store.database);
   const usageReceiver = options.claude ? createUsageReceiver(usage) : undefined;
   const peers = new Set<Peer>();
@@ -240,9 +255,7 @@ export function createProxyServer(options: ServerOptions) {
     'file://',
     'null',
   ];
-  const expectedToken = createHash('sha256').update(options.token).digest();
-  const authorized = (token: string) =>
-    timingSafeEqual(expectedToken, createHash('sha256').update(token).digest());
+  const authorized = (token: string) => spaces.authenticate(token);
   const clientDir = options.clientDir ?? join(options.dataDir, 'client');
   const releases = new ClientReleases(clientDir);
   const version = serviceVersion();
@@ -257,13 +270,24 @@ export function createProxyServer(options: ServerOptions) {
   const web = new WebAccess({
     database: store.database,
     token: options.token,
+    spaces,
+    enabled: options.webEnabled,
     directory: options.webDirectory ?? fileURLToPath(new URL('../web/', import.meta.url)),
     dataDir: options.dataDir,
     tls: options.tls,
     reverseProxy: options.reverseProxy,
     host: options.host ?? '127.0.0.1',
   });
-  const serverDevice: Device = { id: web.serverDeviceId, name: '服务端', platform: 'linux' };
+  const serverDevice: Device = {
+    id: web.serverDeviceId,
+    name: '服务端',
+    platform: process.platform === 'darwin' ? 'darwin' : 'linux',
+  };
+  const spaceOf = (peer: Peer) => {
+    if (!peer.space) throw new DomainError('unauthorized', '请先认证。');
+    return peer.space;
+  };
+  const seatKey = (space: string, device: string) => `${space}.${device}`;
   const originOf = (request: IncomingMessage) =>
     `${options.tls || options.reverseProxy ? 'https' : 'http'}://${request.headers.host}`;
   // Behind the reverse proxy every socket comes from the proxy itself; it passes the client on in X-Real-IP.
@@ -341,6 +365,7 @@ export function createProxyServer(options: ServerOptions) {
       wss.handleUpgrade(request, socket, head, (ws) =>
         wss.emit('connection', ws, address, {
           browser: session.id,
+          space: web.spaceOf(session.id),
           origin: originOf(request),
           proxied: web.proxied(request),
         }),
@@ -370,9 +395,24 @@ export function createProxyServer(options: ServerOptions) {
   function send(peer: Peer, message: ServerMessage) {
     if (peer.socket.readyState === WebSocket.OPEN) peer.socket.send(JSON.stringify(message));
   }
-  function broadcast(message: ServerMessage, sessionId?: string) {
+  function broadcast(message: ServerMessage, sessionId?: string, scope?: string) {
+    const resource =
+      'session' in message
+        ? message.session.id
+        : 'event' in message
+          ? message.event.sessionId
+          : 'sessionId' in message
+            ? message.sessionId
+            : undefined;
+    const owner = scope ?? (resource ? store.spaceOf(resource) : undefined);
+    // A missing owner on a resource is quarantined, not a global broadcast.
+    if (resource && !owner) return;
     for (const peer of peers) {
-      if (peer.authenticated && (!sessionId || peer.subscriptions.has(sessionId)))
+      if (
+        peer.authenticated &&
+        (!owner || peer.space === owner) &&
+        (!sessionId || peer.subscriptions.has(sessionId))
+      )
         send(peer, message);
     }
   }
@@ -396,7 +436,7 @@ export function createProxyServer(options: ServerOptions) {
       updated(store.claim(session.id, device).id);
     }
     const place = session.device ?? device!;
-    const seat = seats.get(place.id);
+    const seat = seats.get(seatKey(spaceOf(peer), place.id));
     if (place.id === device?.id) {
       if (options.claude && !(peer.tunnel?.ssh && seat?.door?.ssh))
         throw new DomainError(
@@ -413,33 +453,38 @@ export function createProxyServer(options: ServerOptions) {
         'execution_offline',
         `设备“${place.name}”的执行通道尚未就绪，请稍候再试。`,
       );
-    return place.id;
+    return seatKey(spaceOf(peer), place.id);
   }
   // Which of the user's computers are connected and whether commands reach them, told to every window when
   // it changes. A computer whose runs wait for it to come back is not connected.
-  let presence = '';
-  function devices(): ServerMessage {
+  const presence = new Map<string, string>();
+  function devices(space: string): ServerMessage {
     return {
       type: 'devices',
       devices: [
         // The service itself is always there. It is listed once it has sessions, with Web on or off, so a
         // desktop that never used it is told of its computers just as before.
-        ...(store.list().some((session) => session.device?.id === serverDevice.id)
+        ...(store.list(space).some((session) => session.device?.id === serverDevice.id)
           ? [{ ...serverDevice, ready: true, server: true as const }]
           : []),
-        ...[...seats.values()].flatMap((seat) => {
-          const device = [...seat.peers].findLast((peer) => peer.device)?.device;
-          return device ? [{ ...device, ready: !options.tunnel || !!seat.door?.ready }] : [];
-        }),
+        ...[...seats.values()]
+          .filter((seat) => seat.space === space)
+          .flatMap((seat) => {
+            const device = [...seat.peers].findLast((peer) => peer.device)?.device;
+            return device ? [{ ...device, ready: !options.tunnel || !!seat.door?.ready }] : [];
+          }),
       ],
     };
   }
   function announce() {
-    const message = devices();
-    const text = JSON.stringify(message);
-    if (closing || text === presence) return;
-    presence = text;
-    broadcast(message);
+    if (closing) return;
+    for (const space of spaces.ids) {
+      const message = devices(space);
+      const text = JSON.stringify(message);
+      if (text === presence.get(space)) continue;
+      presence.set(space, text);
+      broadcast(message, undefined, space);
+    }
   }
   function room() {
     if (options.claude && runs.size + terminals.size >= capacity)
@@ -672,7 +717,7 @@ export function createProxyServer(options: ServerOptions) {
           (succeeded) => {
             if (login === current) login = undefined;
             if (closing) return;
-            if (succeeded) completeOnboarding();
+            if (succeeded && options.claude?.managedRuntime) completeOnboarding();
             track(
               publishAccount(
                 undefined,
@@ -703,7 +748,10 @@ export function createProxyServer(options: ServerOptions) {
     if (!options.claude) throw new DomainError('native_unavailable', '离线模拟没有原生账号状态。');
     // During a run its own CLI answers, so quota can be reread without waiting for the turn to end.
     const active =
-      runs.get(command.sessionId) ?? [...runs.values()].find((run) => run.controls.refresh);
+      runs.get(command.sessionId) ??
+      [...runs.values()].find(
+        (run) => run.controls.refresh && store.spaceOf(run.sessionId) === peer.space,
+      );
     if (active?.controls.refresh && !mutations.size) {
       await active.controls.refresh(command.quota);
       return;
@@ -757,6 +805,7 @@ export function createProxyServer(options: ServerOptions) {
       return attachTerminal(peer, running, command);
     if (terminals.has(command.sessionId) || runs.has(command.sessionId) || mutations.size)
       throw new DomainError('native_busy', '请先结束这个会话的运行或会话管理，再打开终端。');
+    if (options.claude.managedRuntime) completeOnboarding();
     const device = target(peer, session);
     const ssh = seats.get(device)?.door?.ssh;
     if (!ssh && device !== serverDevice.id)
@@ -808,7 +857,6 @@ export function createProxyServer(options: ServerOptions) {
       }
       if (closing || peer.socket.readyState !== WebSocket.OPEN)
         throw new Error('Connection closed');
-      completeOnboarding();
       current.process = new NativeTerminal(
         options.claude.executable,
         terminalArguments(
@@ -906,7 +954,7 @@ export function createProxyServer(options: ServerOptions) {
         rmSync(current.continued.statusPath, { force: true });
       }
       if (terminals.get(current.sessionId) === current) terminals.delete(current.sessionId);
-      throw new DomainError('terminal_failed', '原生终端启动失败，请检查 Linux PTY 组件与 CLI。');
+      throw new DomainError('terminal_failed', '原生终端启动失败，请检查本机 PTY 组件与 CLI。');
     }
   }
   // Another look at a terminal that keeps running. The connection that showed it is told it no longer does.
@@ -1072,9 +1120,10 @@ export function createProxyServer(options: ServerOptions) {
         else await renameSession(command.sessionId, command.title, nativeOptions);
       }
       if (command.type === 'session.delete') {
+        const owner = store.spaceOf(command.sessionId);
         store.delete(command.sessionId);
         rmSync(sessionSshPath(store.directory, command.sessionId), { force: true });
-        broadcast({ type: 'session.deleted', sessionId: command.sessionId });
+        broadcast({ type: 'session.deleted', sessionId: command.sessionId }, undefined, owner);
         for (const other of peers) other.subscriptions.delete(command.sessionId);
       } else {
         broadcast({
@@ -1098,7 +1147,7 @@ export function createProxyServer(options: ServerOptions) {
   async function fork(peer: Peer, command: CommandOf<'session.fork'>, session: Session) {
     if (session.activeRun) throw new DomainError('run_active', '请先结束当前运行再分叉会话。');
     const place = { device: deviceOf(peer), projectPath: command.projectPath };
-    const existing = store.created(command.requestId);
+    const existing = store.created(command.requestId, spaceOf(peer));
     if (existing) return existing.id;
     const before = command.beforeMessageId
       ? store.forkPoint(command.sessionId, command.beforeMessageId)
@@ -1292,6 +1341,29 @@ export function createProxyServer(options: ServerOptions) {
 
   // Resolves to the session ID carried in the response frame; account and usage commands have none.
   async function execute(peer: Peer, command: Command): Promise<string | undefined> {
+    const space = spaceOf(peer);
+    // Every command carrying a session ID passes the same check before any lookup, native IO or side effect.
+    if ('sessionId' in command && !isWebCommand(command)) store.authorize(command.sessionId, space);
+    const maintenance = [
+      'account.login',
+      'account.logout',
+      'account.code',
+      'account.cancel',
+      'settings.update',
+      'instructions.update',
+      'service.update.install',
+      'web.settings.update',
+      'web.totp.setup',
+      'web.totp.enable',
+      'web.totp.disable',
+      'web.certificate.set',
+      'web.certificate.reset',
+    ];
+    if (!options.allowRemoteAdministration && maintenance.includes(command.type))
+      throw new DomainError(
+        'local_admin_required',
+        '共享账号与服务全局设置请由服务端本机管理员维护。',
+      );
     if (isWebCommand(command)) {
       send(
         peer,
@@ -1300,13 +1372,14 @@ export function createProxyServer(options: ServerOptions) {
           address: peer.address,
           sessionId: peer.browser,
           origin: peer.origin,
+          space,
         }),
       );
       return undefined;
     }
     switch (command.type) {
       case 'server.session.create': {
-        const session = store.createOnServer(command.requestId, command.title, serverDevice);
+        const session = store.createOnServer(command.requestId, command.title, serverDevice, space);
         peer.subscriptions.clear();
         peer.subscriptions.add(session.id);
         broadcast({ type: 'session.updated', session });
@@ -1353,7 +1426,11 @@ export function createProxyServer(options: ServerOptions) {
         return undefined;
       }
       case 'usage.summary':
-        send(peer, { type: 'usage.summary', requestId: command.requestId, ...usage.summary() });
+        send(peer, {
+          type: 'usage.summary',
+          requestId: command.requestId,
+          ...usage.summary(Date.now(), space),
+        });
         return undefined;
       case 'quota.watch':
         peer.quotaWanted = command.active;
@@ -1383,11 +1460,11 @@ export function createProxyServer(options: ServerOptions) {
         }
         return undefined;
       case 'usage.query': {
-        const titles = new Map(store.list().map((session) => [session.id, session.title]));
+        const titles = new Map(store.list(space).map((session) => [session.id, session.title]));
         send(peer, {
           type: 'usage.page',
           requestId: command.requestId,
-          ...usage.query(command, (sessionId) => titles.get(sessionId) ?? null),
+          ...usage.query(command, (sessionId) => titles.get(sessionId) ?? null, space),
         });
         return undefined;
       }
@@ -1395,11 +1472,11 @@ export function createProxyServer(options: ServerOptions) {
         const from = pathKey(command.from);
         if (
           store
-            .list()
+            .list(space)
             .some((session) => mutations.has(session.id) && pathKey(session.projectPath) === from)
         )
           throw new DomainError('session_busy', '会话正在更新，请稍后重试。');
-        for (const session of store.moveProject(command.from, command.to, deviceOf(peer)))
+        for (const session of store.moveProject(command.from, command.to, deviceOf(peer), space))
           broadcast({ type: 'session.updated', session });
         return undefined;
       }
@@ -1409,6 +1486,7 @@ export function createProxyServer(options: ServerOptions) {
           command.title,
           command.projectPath,
           deviceOf(peer),
+          space,
         );
         peer.subscriptions.clear();
         peer.subscriptions.add(session.id);
@@ -1520,19 +1598,21 @@ export function createProxyServer(options: ServerOptions) {
       peer.authenticated = true;
       send(peer, {
         type: 'ready',
+        spaceId: spaceOf(peer),
+        remoteAdministration: !!options.allowRemoteAdministration,
         protocolVersion: PROTOCOL_VERSION,
         connectionId: peer.id,
         adapter,
         model: options.claude?.model,
         version,
-        sessions: store.list(),
+        sessions: store.list(spaceOf(peer)),
         browser: {
           sessionId: peer.browser,
           serverDeviceId: serverDevice.id,
           selfSigned: web.selfSigned(peer.origin, peer.proxied),
         },
       });
-      send(peer, devices());
+      send(peer, devices(spaceOf(peer)));
       return true;
     }
     const auth = authSchema.safeParse(value);
@@ -1569,10 +1649,13 @@ export function createProxyServer(options: ServerOptions) {
       peer.socket.close(4002, 'Version mismatch');
       return false;
     }
+    peer.space = authorized(auth.data.token);
     peer.authenticated = true;
     peer.name = auth.data.deviceName;
     send(peer, {
       type: 'ready',
+      spaceId: spaceOf(peer),
+      remoteAdministration: !!options.allowRemoteAdministration,
       protocolVersion: PROTOCOL_VERSION,
       connectionId: peer.id,
       adapter,
@@ -1580,9 +1663,9 @@ export function createProxyServer(options: ServerOptions) {
       version,
       update: updates?.state,
       client: installer(),
-      sessions: store.list(),
+      sessions: store.list(spaceOf(peer)),
     });
-    send(peer, devices());
+    send(peer, devices(spaceOf(peer)));
     // Every connection that asks has an execution channel of its own, to the computer it comes from.
     if (auth.data.tunnel && options.tunnel) {
       peer.tunnel = new Tunnel(
@@ -1619,15 +1702,20 @@ export function createProxyServer(options: ServerOptions) {
   // against the address; a channel arriving after its tunnel ended is an ordinary race of disconnecting.
   function attachChannel(peer: Peer, value: unknown) {
     const attach = tunnelAttachSchema.safeParse(value);
-    const tunnel = attach.success
+    const owner = attach.success
       ? [...peers].find((owner) => owner.authenticated && owner.id === attach.data.connectionId)
-          ?.tunnel
       : undefined;
+    const tunnel = owner?.tunnel;
     if (!attach.success || !tunnel) {
       peer.socket.close(TUNNEL_CLOSE.unknown, 'Unknown tunnel');
       return false;
     }
-    if (!tunnel.matches(attach.data.secret)) {
+    const space = attach.data.token
+      ? authorized(attach.data.token)
+      : spaces.ids.size === 1
+        ? owner?.space
+        : undefined;
+    if (space !== owner?.space || !tunnel.matches(attach.data.secret)) {
       refuse(peer.address, 'tunnel secret');
       peer.socket.close(TUNNEL_CLOSE.refused, 'Unauthorized');
       return false;
@@ -1669,6 +1757,14 @@ export function createProxyServer(options: ServerOptions) {
   }
   // Keystrokes, resizes and flow-control acknowledgments carry no request ID and get no response.
   function controlTerminal(peer: Peer, control: TerminalControl) {
+    if (store.spaceOf(control.sessionId) !== peer.space) {
+      send(peer, {
+        type: 'connection.error',
+        code: 'terminal_inactive',
+        message: '原生终端已结束或属于另一连接。',
+      });
+      return;
+    }
     const current = terminals.get(control.sessionId);
     if (!current || current.owner !== peer || current.id !== control.terminalId) {
       send(peer, {
@@ -1733,10 +1829,10 @@ export function createProxyServer(options: ServerOptions) {
   }
   // The computer's place here, made when the first of its connections says which computer it is.
   function enter(peer: Peer) {
-    const device = deviceOf(peer).id;
+    const device = seatKey(spaceOf(peer), deviceOf(peer).id);
     let seat = seats.get(device);
     if (!seat) {
-      seat = { device, peers: new Set() };
+      seat = { device, space: spaceOf(peer), peers: new Set() };
       seats.set(device, seat);
       if (options.tunnel) {
         seat.door = new Door(options.tunnel, store.directory, device);
@@ -1752,7 +1848,7 @@ export function createProxyServer(options: ServerOptions) {
   // The device's commands go through this connection's tunnel from now on: the newest that is ready.
   async function adopt(peer: Peer) {
     if (!peer.device || !peer.tunnel?.ssh) return;
-    const seat = seats.get(peer.device.id);
+    const seat = seats.get(seatKey(spaceOf(peer), peer.device.id));
     if (!seat?.door) return;
     await seat.opening;
     if (peers.has(peer) && seat.peers.has(peer)) seat.door.use(peer.tunnel);
@@ -1786,7 +1882,7 @@ export function createProxyServer(options: ServerOptions) {
         const task = terminal.process?.close();
         if (task) track(task);
       }
-    const seat = peer.device && seats.get(peer.device.id);
+    const seat = peer.device && seats.get(seatKey(spaceOf(peer), peer.device.id));
     if (seat?.peers.delete(peer)) {
       if (seat.door?.uses(peer.tunnel))
         seat.door.use([...seat.peers].findLast((other) => other.tunnel?.ssh)?.tunnel);
@@ -1820,7 +1916,7 @@ export function createProxyServer(options: ServerOptions) {
     (
       socket: WebSocket,
       address: string,
-      context?: { browser?: string; origin: string; proxied?: boolean },
+      context?: { browser?: string; space?: string; origin: string; proxied?: boolean },
     ) => {
       void releases.refresh();
       const peer: Peer = {
@@ -1829,6 +1925,7 @@ export function createProxyServer(options: ServerOptions) {
         address,
         authenticated: false,
         browser: context?.browser,
+        space: context?.space,
         origin: context?.origin,
         proxied: context?.proxied,
         name: '',
@@ -1926,6 +2023,13 @@ export function createProxyServer(options: ServerOptions) {
             socket.close(4003, 'Reserved device');
             return;
           }
+          if (
+            peer.device &&
+            (peer.device.id !== identity.data.id || peer.device.platform !== identity.data.platform)
+          ) {
+            socket.close(4003, 'Device identity changed');
+            return;
+          }
           peer.device = {
             id: identity.data.id,
             name: peer.name,
@@ -1936,7 +2040,7 @@ export function createProxyServer(options: ServerOptions) {
             console.log(
               `Connection ${peer.id.slice(0, 8)} opened: device "${peer.name}" (${identity.data.id.slice(0, 8)}) from ${address}`,
             );
-          for (const session of store.named(peer.device))
+          for (const session of store.named(peer.device, spaceOf(peer)))
             broadcast({ type: 'session.updated', session });
           enter(peer);
           announce();
@@ -1982,7 +2086,7 @@ export function createProxyServer(options: ServerOptions) {
         clearInterval(heartbeat);
         if (!signedIn) gate.leave(address);
         // Why a connection ended is the first thing needed when a run was cut short.
-        const device = peer.device?.id;
+        const device = peer.device && seatKey(spaceOf(peer), peer.device.id);
         const before = [...runs.values()].filter((run) => run.device === device).length;
         release(peer);
         // A native run that is being ended takes a moment to go: what became of the runs is told by whether the

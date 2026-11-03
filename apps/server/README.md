@@ -1,6 +1,8 @@
-# Linux 服务
+# 代理服务
 
-Linux 上的代理服务：认证客户端、管理会话、驱动官方 Claude Code、维护到 Windows 的执行通道，并记录调用统计。`src/throttle.ts` 按来源地址限制凭据错误的重试和未认证连接的数量。
+Linux/Docker 与 macOS 原生的代理服务：认证客户端、管理会话、驱动官方 Claude Code、维护到 Windows 的执行通道，并记录调用统计。`src/throttle.ts` 按来源地址限制凭据错误的重试和未认证连接的数量。
+
+空间配置、兼容迁移及授权边界见[访问空间](../../docs/access-spaces.md)，复用现有安装与登录见[原生服务](../../docs/native-server.md)。
 
 ## 开发入口
 
@@ -24,7 +26,7 @@ Linux 上的代理服务：认证客户端、管理会话、驱动官方 Claude 
 
 生产部署见[操作手册](../../deploy/README.md)。`src/config.ts` 读取配置：`PROXY_ADAPTER=claude-code`、`PROXY_TOKEN`、`PROXY_DATA_DIR`、`CLAUDE_PATH`；旧部署留下的 `PROXY_PUBLIC_HOST` 与 `FRPS_*` 不再读取；直连还需要 `PROXY_TLS_CERT/KEY`，反代明确设置 `PROXY_TLS_MODE=reverse-proxy`。反代原生进程默认仅回环，Compose 显式使用容器网卡并仅宿主回环发布。API 调试可用 `CLAUDE_MODEL`、`CLAUDE_SETTINGS_PATH` 指向私有提供方配置。原生保留期 `CLAUDE_CONTEXT_RETENTION_DAYS` 默认 3650（正整数）。不会自动获取或转发订阅 OAuth。
 
-- `src/tunnel.ts`：每个在线设备一个回环监听和一个随机通道密钥。每来一条 SSH 连接就先不读它，经控制连接要一条通道（`tunnel.open`），客户端带着密钥连上来后把两者的字节对接；十秒没有等到就关掉这条 SSH 连接。同时等待的连接和已对接的通道各有上限。注册密钥后用原生 ssh 探测。生成的 SSH 配置打开连接复用（`ControlMaster`，套接字在连接目录里）：一台设备的命令共用一条 SSH 连接，省掉每条命令的登录往返；Windows 上的 `ssh` 没有连接复用、数据目录过长放不下套接字路径时不启用。凭据在 `connections/<id>/`（目录 0700、文件 0600），断连关闭监听和全部通道并删除目录。通道连接的认领在 `server.ts`：首帧是 `tunnel.attach` 的连接不成为控制连接，密钥不对按登录失败计数。会话的系统提示词引用的是固定的 `session-ssh/<会话>.conf`（只含指向当前连接配置的 `Include`，不含凭据），重连不改变提示词，见[原生运行时](../../docs/native-runtime.md)。
+- `src/tunnel.ts`：每个在线设备一个回环监听和一个随机通道密钥。每来一条 SSH 连接就先不读它，经控制连接要一条通道（`tunnel.open`），客户端带着密钥连上来后把两者的字节对接；十秒没有等到就关掉这条 SSH 连接。同时等待的连接和已对接的通道各有上限。注册密钥后用原生 ssh 探测。生成的 SSH 配置打开连接复用（`ControlMaster`，套接字在连接目录里）：一台设备的命令共用一条 SSH 连接，省掉每条命令的登录往返；Windows 上的 `ssh` 没有连接复用、数据目录过长放不下套接字路径时不启用。凭据在 `connections/<id>/`（目录 0700、文件 0600），断连关闭监听和全部通道并删除目录。通道连接的认领在 `server.ts`：首帧是 `tunnel.attach` 的连接不成为控制连接，密钥不对按登录失败计数。会话的系统提示词引用的是固定的 `session-ssh/<会话>.conf`（保存设备 door 的配置文本，不含私钥内容），重连不改变提示词，见[原生运行时](../../docs/native-runtime.md)。
 - `src/claude.ts`：官方 SDK `query` 驱动指定的原生 CLI；提示词给 Windows cwd、PowerShell 和 SSH config 路径。`canUseTool` 只转发原生权限请求，不注册新增 MCP 工具、不自行决定审批策略。
 - `src/native-input.ts`：同一运行可追加 async user message，带客户端 UUID、human origin，原生负责调度 / 合并。结果按 `user_message_uuids` 和 `queued_turn_count` 处理，不能首个 result 就丢弃后续输入；收尾同步停止接收。取消 / 断连 / 重启不重放，未送达与接收未确认分别记录。
 - `src/claude-stream.ts`：适配公开文字 / 思考 / 工具入参和结果。不解析未公开隐藏推理，不把自建结果格式塞回原生工具。

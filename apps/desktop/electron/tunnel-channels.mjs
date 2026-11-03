@@ -16,7 +16,7 @@ import { TUNNEL_CLOSE } from '@cc-desk-tunnel/protocol';
 // it running. Each channel is therefore asked for a sign of life every `heartbeatMs` and given up after two
 // in a row without an answer, as the control connection is by the service.
 export function openChannels(
-  { connectionId, secret },
+  { connectionId, secret, token },
   port,
   dial,
   onFailure,
@@ -58,7 +58,15 @@ export function openChannels(
       return;
     }
     state.lastError = undefined;
-    channel.send(JSON.stringify({ type: 'tunnel.attach', connectionId, channelId, secret }));
+    channel.send(
+      JSON.stringify({
+        type: 'tunnel.attach',
+        connectionId,
+        channelId,
+        secret,
+        ...(token ? { token } : {}),
+      }),
+    );
     // The stream takes over the connection's frames from here, in the same tick, so no bytes are missed.
     const stream = createWebSocketStream(channel);
     const local = connect(port, '127.0.0.1');

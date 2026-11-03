@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isIP } from 'node:net';
@@ -19,6 +19,7 @@ import type {
   WebSession,
   WebSettingsState,
 } from '@cc-desk-tunnel/protocol';
+import { AccessSpaces } from './access-spaces.ts';
 import { DomainError } from './errors.ts';
 import { Throttle } from './throttle.ts';
 import { WebCertificates } from './web-certificate.ts';
@@ -39,6 +40,7 @@ type StoredSession = {
   id: string;
   secret_hash: string;
   token_hash: string;
+  space_id: string;
   name: string;
   created: number;
   active: number;
@@ -59,6 +61,8 @@ export type WebReply = Extract<
 export type WebAccessOptions = {
   database: DatabaseSync;
   token: string;
+  spaces?: AccessSpaces;
+  enabled?: boolean;
   // The shared frontend build, and the data directory that keeps an imported certificate.
   directory: string;
   dataDir: string;
@@ -68,7 +72,13 @@ export type WebAccessOptions = {
   now?: () => number;
 };
 // Who sends a command: an authenticated desktop, or the browser login `sessionId`.
-export type WebContext = { desktop: boolean; address: string; sessionId?: string; origin?: string };
+export type WebContext = {
+  desktop: boolean;
+  address: string;
+  sessionId?: string;
+  origin?: string;
+  space?: string;
+};
 const ip = (address: string) =>
   address.startsWith('::ffff:') && isIP(address.slice(7)) === 4
     ? address.slice(7)
@@ -98,7 +108,7 @@ export function webStaticPath(root: string, target: string) {
 export class WebAccess {
   private options: WebAccessOptions;
   private settings: Settings;
-  private tokenHash: string;
+  private spaces: AccessSpaces;
   private now: () => number;
   private sockets = new Map<string, Set<WebSocket>>();
   private timer?: NodeJS.Timeout;
@@ -115,7 +125,7 @@ export class WebAccess {
   constructor(options: WebAccessOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
-    this.tokenHash = hash(options.token);
+    this.spaces = options.spaces ?? new AccessSpaces(options.token);
     options.database.exec(`
       CREATE TABLE IF NOT EXISTS web_settings (
         id INTEGER PRIMARY KEY CHECK (id = 1), settings TEXT NOT NULL, device_id TEXT NOT NULL,
@@ -126,11 +136,25 @@ export class WebAccess {
         name TEXT NOT NULL, created INTEGER NOT NULL, active INTEGER NOT NULL, expires INTEGER NOT NULL
       );
     `);
+    if (
+      !(
+        options.database.prepare('PRAGMA table_info(web_sessions)').all() as { name: string }[]
+      ).some((column) => column.name === 'space_id')
+    )
+      options.database.exec(
+        "ALTER TABLE web_sessions ADD COLUMN space_id TEXT NOT NULL DEFAULT 'default'",
+      );
     options.database
       .prepare('INSERT OR IGNORE INTO web_settings (id, settings, device_id) VALUES (1, ?, ?)')
       .run(JSON.stringify(defaults), randomUUID());
     const row = this.record();
     this.settings = webStoredSettingsSchema.parse(JSON.parse(row.settings));
+    if (options.enabled !== undefined) {
+      this.settings.enabled = options.enabled;
+      options.database
+        .prepare('UPDATE web_settings SET settings = ? WHERE id = 1')
+        .run(JSON.stringify(this.settings));
+    }
     this.serverDeviceId = z.uuid().parse(row.device_id);
     this.certificates = new WebCertificates({
       dataDir: options.dataDir,
@@ -138,7 +162,11 @@ export class WebAccess {
       tls: options.tls,
       reverseProxy: options.reverseProxy,
     });
-    options.database.prepare('DELETE FROM web_sessions WHERE token_hash != ?').run(this.tokenHash);
+    for (const session of options.database
+      .prepare('SELECT id, token_hash, space_id FROM web_sessions')
+      .all() as Pick<StoredSession, 'id' | 'token_hash' | 'space_id'>[])
+      if (this.spaces.spaceForFingerprint(session.token_hash) !== session.space_id)
+        this.revoke(session.id);
     this.sweep();
   }
 
@@ -175,7 +203,7 @@ export class WebAccess {
   private valid(row: StoredSession) {
     const now = this.now();
     return (
-      row.token_hash === this.tokenHash &&
+      this.spaces.spaceForFingerprint(row.token_hash) === row.space_id &&
       row.expires > now &&
       row.active + this.settings.idleMinutes * 60_000 > now
     );
@@ -213,6 +241,9 @@ export class WebAccess {
       Math.max(1, Math.min(next - this.now(), 2_147_483_647)),
     );
     this.timer.unref();
+  }
+  spaceOf(id: string) {
+    return this.getSession(id)?.space_id;
   }
   active(id: string) {
     if (!this.enabled) return false;
@@ -348,15 +379,17 @@ export class WebAccess {
       this.certificates.selfSigned(origin ? new URL(origin).hostname : this.settings.domain)
     );
   }
-  state(origin?: string): WebSettingsState {
+  state(origin?: string, space?: string): WebSettingsState {
     this.sweep();
     return {
       ...this.settings,
       totpEnabled: !!this.record().totp_secret,
       sessions: (
         this.options.database
-          .prepare('SELECT * FROM web_sessions ORDER BY created DESC')
-          .all() as StoredSession[]
+          .prepare(
+            'SELECT * FROM web_sessions WHERE ? IS NULL OR space_id = ? ORDER BY created DESC',
+          )
+          .all(space ?? null, space ?? null) as StoredSession[]
       ).map((row) => this.publicSession(row)),
       url: this.url(origin),
       selfSigned: this.selfSigned(this.url(origin)),
@@ -378,9 +411,8 @@ export class WebAccess {
     if (this.throttle.blocked(address, this.now()))
       fail('web_rate_limited', '尝试过于频繁，请稍后重试。');
     const row = this.record();
-    const passwordOK =
-      proof &&
-      timingSafeEqual(Buffer.from(hash(proof.password), 'hex'), Buffer.from(this.tokenHash, 'hex'));
+    const space = proof && this.spaces.authenticate(proof.password);
+    const passwordOK = !!space;
     const step = row.totp_secret
       ? totpStep(row.totp_secret, proof?.code ?? '', this.now(), row.totp_last)
       : undefined;
@@ -391,10 +423,12 @@ export class WebAccess {
     if (step !== undefined)
       this.options.database.prepare('UPDATE web_settings SET totp_last = ? WHERE id = 1').run(step);
     this.throttle.succeed(address);
+    return space!;
   }
   // A browser proves itself again for a security setting; an authenticated desktop already holds the token.
   private reauthenticate(proof: WebProof | undefined, context: WebContext) {
-    if (!context.desktop) this.proof(proof, context.address);
+    if (!context.desktop && this.proof(proof, context.address) !== this.spaceOf(context.sessionId!))
+      fail('web_unauthorized', '请使用当前空间的服务凭据。');
   }
 
   execute(input: WebCommand, context: WebContext): WebReply {
@@ -409,6 +443,8 @@ export class WebAccess {
         this.update(command.values, command.proof, context);
         break;
       case 'web.sessions.revoke':
+        if (context.space && this.spaceOf(command.sessionId) !== context.space)
+          fail('web_unauthorized', '登录会话不存在。');
         // Signing this browser out needs no proof; ending another one does.
         if (command.sessionId !== context.sessionId) this.reauthenticate(command.proof, context);
         this.revoke(command.sessionId);
@@ -440,7 +476,11 @@ export class WebAccess {
         if (command.type === 'web.certificate.reset') this.certificates.reset();
         return { type: 'web.certificate.state', requestId, ...this.certificates.state() };
     }
-    return { type: 'web.settings.state', requestId, values: this.state(context.origin) };
+    return {
+      type: 'web.settings.state',
+      requestId,
+      values: this.state(context.origin, context.space),
+    };
   }
   private update(values: Partial<Settings>, proof: WebProof | undefined, context: WebContext) {
     if (!context.desktop && Object.keys(values).some((key) => key !== 'path'))
@@ -600,7 +640,7 @@ export class WebAccess {
     try {
       const body = webLoginSchema.safeParse(await this.body(request));
       if (!body.success) fail('web_bad_request', '登录请求格式无效。');
-      this.proof(body.data, address);
+      const space = this.proof(body.data, address);
       this.sweep();
       // Signing in again replaces this browser's login instead of adding one.
       const previous = this.cookieSession(request);
@@ -615,16 +655,17 @@ export class WebAccess {
         id: randomUUID(),
         name: String(request.headers['user-agent'] ?? '浏览器').slice(0, 120),
         secret_hash: hash(secret),
-        token_hash: this.tokenHash,
+        token_hash: hash(body.data!.password),
+        space_id: space,
         created: now,
         active: now,
         expires: now + 30 * DAY,
       };
       this.options.database
         .prepare(
-          'INSERT INTO web_sessions (id, secret_hash, token_hash, name, created, active, expires) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO web_sessions (id, secret_hash, token_hash, name, created, active, expires, space_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         )
-        .run(row.id, row.secret_hash, row.token_hash, row.name, now, now, row.expires);
+        .run(row.id, row.secret_hash, row.token_hash, row.name, now, now, row.expires, space);
       if (previous) this.revoke(previous.id);
       response.setHeader('Set-Cookie', this.cookie(secret, row.expires));
       return this.json(response, 200, this.loginState(request, row));

@@ -1,20 +1,30 @@
 import type { DevicePlatform } from '@cc-desk-tunnel/protocol';
 
-// What Claude is told that depends on the system of the device: in the system prompt, and again with a
-// message when a session goes on from a device of another system. Everything else reads the same for all,
-// and is worded to hold on every system: what becomes of a process when its command ends differs between
-// them, so Claude is told to count on neither outcome.
+export const posixLiteral = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+// JSON quoting is not Bash quoting: $, backticks and backslashes must keep their literal values.
+export const bashDoubleQuoted = (value: string) => `"${value.replace(/[\\"$`]/g, '\\$&')}"`;
+const transfer = (value: string) =>
+  /^[a-zA-Z0-9_/:.\-]+$/.test(value) ? value : posixLiteral(value);
+// SFTP upload destinations are literal; scp download sources are globs. Keep both representations when they differ.
+export function transferPaths(path: string) {
+  const value = `device:${path}`;
+  return { path: transfer(value), source: transfer(value.replace(/[\\*?\[\]]/g, '\\$&')) };
+}
+function transferDescription(path: string) {
+  const values = transferPaths(path);
+  return `${values.path}.${values.source === values.path ? '' : ` SCP download source is ${values.source}.`}`;
+}
+
 export function deviceTerms(platform: DevicePlatform, projectPath: string) {
   if (platform === 'win32')
     return {
       name: 'Windows',
-      script: `On Windows it is PowerShell 7, as plain text: any length, UTF-8, nothing to escape or encode. Errors come back as plain text and the script's exit code is kept; standard input is the script, so it cannot read more. Begin it with Set-Location -LiteralPath '${projectPath.replaceAll("'", "''")}'.`,
-      command: `The host device runs a command line as it is, parsed by cmd.exe on Windows, and is the one for scp or sftp, where a Windows path takes forward slashes: the project directory is ${JSON.stringify(`device:${projectPath.replaceAll('\\', '/')}`)}.`,
+      script: `carrying the complete UTF-8 PowerShell 7 script on stdin. Additional transport escaping, encoding and command arguments are prohibited; RemoteCommand selects the runner. Every script MUST begin with Set-Location -LiteralPath '${projectPath.replaceAll("'", "''")}'. Scripts MUST NOT request further stdin input. UTF-8 output, errors and exit status MUST be preserved.`,
+      command: `Command lines follow cmd.exe syntax; transfer paths MUST use forward slashes: ${transferDescription(projectPath.replaceAll('\\', '/'))}`,
     };
-  const name = platform === 'darwin' ? 'macOS' : 'Linux';
   return {
-    name,
-    script: `On ${name} it is the user's own shell, zsh or bash, with the environment of their terminal, as plain text: any length, UTF-8, nothing to escape or encode. The script's exit code is kept; standard input is the script, so it cannot read more. Begin it with cd -- '${projectPath.replaceAll("'", "'\\''")}'.`,
-    command: `The host device runs a command line as it is, parsed by that same shell, and is the one for scp or sftp: the project directory is ${JSON.stringify(`device:${projectPath}`)}.`,
+    name: platform === 'darwin' ? 'macOS' : 'Linux',
+    script: `carrying the complete UTF-8 script on stdin. Additional transport escaping, encoding and command arguments are prohibited; RemoteCommand selects the workspace zsh/bash with its terminal environment. Every script MUST begin with cd -- ${posixLiteral(projectPath)}. Scripts MUST NOT request further stdin input. UTF-8 output, errors and exit status MUST be preserved.`,
+    command: `Command lines follow the same workspace shell syntax; the transfer path is ${transferDescription(projectPath)}`,
   };
 }

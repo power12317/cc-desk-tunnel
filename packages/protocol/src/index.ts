@@ -232,7 +232,7 @@ const toolSchema = z.object({
   toolId: z.string().min(1),
   name: z.string().min(1),
   input: z.string(),
-  target: z.enum(['Windows (simulation)', 'Windows', 'Linux']),
+  target: z.enum(['Windows (simulation)', 'Windows', 'Linux', 'macOS']),
 });
 export const eventPayloadSchema = z.discriminatedUnion('type', [
   z.object({
@@ -765,6 +765,8 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('ready'),
+    spaceId: z.string().optional(),
+    remoteAdministration: z.boolean().optional(),
     protocolVersion: z.literal(PROTOCOL_VERSION),
     connectionId: id,
     adapter: z.enum(['simulation', 'claude-code']),
@@ -885,6 +887,7 @@ export type ServerMessage = z.infer<typeof serverMessageSchema>;
 export const tunnelAttachSchema = z
   .object({
     type: z.literal('tunnel.attach'),
+    token: z.string().min(24).max(4096).optional(),
     connectionId: id,
     channelId: id,
     secret: tunnelSecret,

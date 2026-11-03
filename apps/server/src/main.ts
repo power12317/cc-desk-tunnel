@@ -10,7 +10,7 @@ const { options, native, port } = environmentConfig(
   fileURLToPath(new URL('../../../.local/sessions', import.meta.url)),
 );
 const programDir = process.env.PROXY_PROGRAM_DIR;
-if (native) removeFrpLeftovers();
+if (native && process.platform === 'linux') removeFrpLeftovers();
 clearServiceVariables(process.env);
 // What a process that did not get to close left of its connections, the doors of their devices and its terminals.
 if (native)

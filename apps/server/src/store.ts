@@ -69,7 +69,7 @@ export class SessionStore {
   // Sessions as last read or written: an event is recorded without reading its session back.
   private known = new Map<string, { record: string; createRequestId: string }>();
 
-  constructor(directory: string) {
+  constructor(directory: string, legacySpace = 'default') {
     this.directory = directory;
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.database = new DatabaseSync(join(directory, 'sessions.sqlite'));
@@ -87,6 +87,10 @@ export class SessionStore {
       );
       CREATE INDEX IF NOT EXISTS events_run ON events(session_id, run_id, sequence);
       CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS session_spaces (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, space_id TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS session_spaces_owner ON session_spaces(space_id);
       CREATE TABLE IF NOT EXISTS native_roots (
         device_id TEXT NOT NULL, path_key TEXT NOT NULL, root TEXT NOT NULL,
         PRIMARY KEY (device_id, path_key)
@@ -94,6 +98,27 @@ export class SessionStore {
     `);
     try {
       this.importJson();
+      // Backfill exactly once. Later missing ownership is quarantined, never claimed by a new connection.
+      if (!this.database.prepare("SELECT 1 FROM migrations WHERE name = 'space-ownership'").get()) {
+        this.database.exec('BEGIN');
+        try {
+          this.database
+            .prepare('INSERT OR IGNORE INTO session_spaces SELECT id, ? FROM sessions')
+            .run(legacySpace);
+          if (legacySpace !== 'default')
+            this.database
+              .prepare('UPDATE native_roots SET device_id = ? || device_id')
+              .run(`${legacySpace}:`);
+          this.database
+            .prepare('UPDATE sessions SET create_request_id = ? || create_request_id')
+            .run(`${legacySpace}:`);
+          this.database.prepare("INSERT INTO migrations VALUES ('space-ownership')").run();
+          this.database.exec('COMMIT');
+        } catch (error) {
+          this.database.exec('ROLLBACK');
+          throw error;
+        }
+      }
       this.restoreUpdatedAt();
       this.mergeFragments();
       for (const session of this.list()) {
@@ -299,10 +324,26 @@ export class SessionStore {
     );
   }
 
-  list(): Session[] {
+  spaceOf(sessionId: string): string | undefined {
     return this.database
-      .prepare('SELECT metadata FROM sessions')
-      .all()
+      .prepare('SELECT space_id FROM session_spaces WHERE session_id = ?')
+      .get(sessionId)?.space_id as string | undefined;
+  }
+  authorize(sessionId: string, space: string) {
+    if (this.spaceOf(sessionId) !== space) throw new DomainError('not_found', '会话不存在。');
+  }
+  private assign(sessionId: string, space: string) {
+    this.database.prepare('INSERT INTO session_spaces VALUES (?, ?)').run(sessionId, space);
+  }
+  private deviceKey(device: Device, space: string) {
+    return space === 'default' ? device.id : `${space}:${device.id}`;
+  }
+  list(space?: string): Session[] {
+    return this.database
+      .prepare(
+        'SELECT metadata FROM sessions WHERE ? IS NULL OR id IN (SELECT session_id FROM session_spaces WHERE space_id = ?)',
+      )
+      .all(space ?? null, space ?? null)
       .map((row) => sessionSchema.parse(JSON.parse(String(row.metadata))))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
@@ -382,12 +423,20 @@ export class SessionStore {
     return row ? (JSON.parse(String(row.data)) as SessionEvent) : undefined;
   }
 
-  create(requestId: string, title: string, projectPath: string, device: Device): Session {
+  create(
+    requestId: string,
+    title: string,
+    projectPath: string,
+    device: Device,
+    space = 'default',
+  ): Session {
+    requestId = `${space}:${requestId}`;
     const row = this.database
       .prepare('SELECT metadata FROM sessions WHERE create_request_id = ?')
       .get(requestId);
     if (row) {
       const session = sessionSchema.parse(JSON.parse(String(row.metadata)));
+      this.authorize(session.id, space);
       if (
         ((!session.autoTitle || title !== '新会话') && session.title !== title) ||
         session.projectPath !== projectPath
@@ -402,7 +451,7 @@ export class SessionStore {
       autoTitle: title === '新会话',
       projectPath,
       device,
-      nativeRoot: this.rootFor(device, projectPath),
+      nativeRoot: this.rootFor(device, projectPath, space),
       permissionMode: 'auto',
       model: null,
       effort: null,
@@ -413,16 +462,17 @@ export class SessionStore {
     this.database
       .prepare('INSERT INTO sessions VALUES (?, ?, ?)')
       .run(session.id, JSON.stringify(session), requestId);
+    this.assign(session.id, space);
     return session;
   }
 
   // A plain session on this server has one directory that is both its project and its native root.
-  createOnServer(requestId: string, title: string, device: Device): Session {
-    const existing = this.created(requestId);
+  createOnServer(requestId: string, title: string, device: Device, space = 'default'): Session {
+    const existing = this.created(requestId, space);
     if (existing) {
       if (existing.device?.id !== device.id)
         throw new DomainError('request_conflict', '请求 ID 已被其他内容使用。');
-      return this.create(requestId, title, existing.projectPath, device);
+      return this.create(requestId, title, existing.projectPath, device, space);
     }
     const root = randomUUID();
     const projectPath = join(this.directory, 'native', root);
@@ -430,8 +480,8 @@ export class SessionStore {
     try {
       this.database
         .prepare('INSERT INTO native_roots VALUES (?, ?, ?)')
-        .run(device.id, pathKey(projectPath), root);
-      const session = this.create(requestId, title, projectPath, device);
+        .run(this.deviceKey(device, space), pathKey(projectPath), root);
+      const session = this.create(requestId, title, projectPath, device, space);
       this.database.exec('COMMIT');
       return session;
     } catch (error) {
@@ -440,11 +490,15 @@ export class SessionStore {
     }
   }
 
-  created(requestId: string) {
+  created(requestId: string, space = 'default') {
+    requestId = `${space}:${requestId}`;
     const row = this.database
       .prepare('SELECT metadata FROM sessions WHERE create_request_id = ?')
       .get(requestId);
-    return row ? sessionSchema.parse(JSON.parse(String(row.metadata))) : undefined;
+    if (!row) return undefined;
+    const session = sessionSchema.parse(JSON.parse(String(row.metadata)));
+    this.authorize(session.id, space);
+    return session;
   }
   // Where a fork that stops before this message cuts the history. Only a message that started its run
   // qualifies: cutting at one added mid-run would leave half a run behind.
@@ -468,6 +522,8 @@ export class SessionStore {
     beforeSequence?: number,
   ): Session {
     const { session: source } = this.get(sourceId);
+    const space = this.spaceOf(sourceId);
+    if (!space) throw new DomainError('not_found', '会话不存在。');
     const now = new Date().toISOString();
     const session: Session = {
       ...source,
@@ -479,7 +535,7 @@ export class SessionStore {
       // Claude Code forks a session beside it, in the directory it works in.
       nativeRoot: native
         ? (source.nativeRoot ?? source.id)
-        : this.rootFor(place.device, place.projectPath ?? source.projectPath),
+        : this.rootFor(place.device, place.projectPath ?? source.projectPath, space),
       createdAt: now,
       updatedAt: now,
       activeRun: null,
@@ -492,7 +548,8 @@ export class SessionStore {
     try {
       this.database
         .prepare('INSERT INTO sessions VALUES (?, ?, ?)')
-        .run(id, JSON.stringify(session), requestId);
+        .run(id, JSON.stringify(session), `${space}:${requestId}`);
+      this.assign(id, space);
       const insert = this.database.prepare('INSERT INTO events VALUES (?, ?, ?, ?)');
       events.forEach((event, index) => {
         const payload =
@@ -657,15 +714,20 @@ export class SessionStore {
     session.projectPath = projectPath;
     session.device = device;
     // Claude Code finds a session's history only in the directory it works in, so one with history stays there.
-    if (!this.hasNativeContext(sessionId)) session.nativeRoot = this.rootFor(device, projectPath);
+    if (!this.hasNativeContext(sessionId))
+      session.nativeRoot = this.rootFor(
+        device,
+        projectPath,
+        this.spaceOf(sessionId) ?? '__unassigned__',
+      );
     session.updatedAt = new Date().toISOString();
     this.save(session);
     return session;
   }
   // Points a project of a computer at another directory there. Its sessions move with it, and so does the
   // directory Claude Code works in for it, unless the other directory has one already.
-  moveProject(from: string, to: string, device: Device) {
-    const members = this.list().filter(
+  moveProject(from: string, to: string, device: Device, space = 'default') {
+    const members = this.list(space).filter(
       (session) =>
         pathKey(session.projectPath) === pathKey(from) &&
         // Before computers were told apart they were all Windows ones, and one of them takes those over.
@@ -677,19 +739,19 @@ export class SessionStore {
       .prepare(
         'UPDATE OR IGNORE native_roots SET path_key = ? WHERE device_id = ? AND path_key = ?',
       )
-      .run(pathKey(to), device.id, pathKey(from));
+      .run(pathKey(to), this.deviceKey(device, space), pathKey(from));
     return members.map((session) => this.move(session.id, to, device));
   }
   // The directory Claude Code works in for a directory of a computer: one for each project, shared by its
   // sessions. A session without a project has a folder of its own there, and so a directory of its own here.
-  private rootFor(device: Device, path: string) {
+  private rootFor(device: Device, path: string, space: string) {
     const key = pathKey(path);
     this.database
       .prepare('INSERT OR IGNORE INTO native_roots VALUES (?, ?, ?)')
-      .run(device.id, key, randomUUID());
+      .run(this.deviceKey(device, space), key, randomUUID());
     const row = this.database
       .prepare('SELECT root FROM native_roots WHERE device_id = ? AND path_key = ?')
-      .get(device.id, key)!;
+      .get(this.deviceKey(device, space), key)!;
     return String(row.root);
   }
   // A session from before computers were told apart becomes that of the first one to use it, where it is.
@@ -705,9 +767,9 @@ export class SessionStore {
     return session;
   }
   // A computer goes by the name it last signed in with, in every session that is on it.
-  named(device: Device) {
+  named(device: Device, space = 'default') {
     const changed: Session[] = [];
-    for (const session of this.list())
+    for (const session of this.list(space))
       if (session.device?.id === device.id && session.device.name !== device.name) {
         session.device = device;
         this.save(session);
@@ -729,15 +791,10 @@ export class SessionStore {
     said.told = { projectPath: session.projectPath, device, platform };
     this.save(session);
     const terms = deviceTerms(platform, session.projectPath);
-    // The prompt's account of scripts and command lines holds for one system only.
-    const system =
-      (known.platform ?? 'win32') === platform
-        ? ''
-        : ` It runs another system than the one described so far, and this replaces what was said of scripts and command lines. For device-script: ${terms.script} ${terms.command}`;
     const paths = `The project directory is now ${JSON.stringify(session.projectPath)} (it was ${JSON.stringify(known.projectPath)}).`;
-    return known.device === device
-      ? `[CC Desk Tunnel: the user moved this session to another project on the device. ${paths} From now on use the new directory as the project directory, in place of the one given earlier.]\n\n`
-      : `[CC Desk Tunnel: the user now continues this session from another of their computers, ${JSON.stringify(session.device!.name)}. From now on the device is that computer: ${terms.name}. ${paths} What the earlier computer had, its files, paths and running processes, is not on this one unless you find it there.${system}]\n\n`;
+    // A directory change must update the mandatory first script line even when the platform stays the same.
+    const environment = `Workspace: ${terms.name}. ${paths} Scripts MUST use device-script with a quoted heredoc ${terms.script} ${terms.command}`;
+    return `[CC Desk Tunnel: ${known.device === device ? 'the workspace directory changed.' : 'this session moved to another workspace; prior files and processes MUST NOT be assumed present.'} ${environment}]\n\n`;
   }
   // What the system prompt of a run says. A prompt that changes costs the whole conversation's prompt cache,
   // so it stays what it first was — through moves, which `notice` tells Claude of — until a compaction,

@@ -59,7 +59,7 @@ export default function GlobalInstructions({ client }: { client: ProxyClient }) 
           aria-label="全局说明"
           className="instructions-editor"
           value={text}
-          disabled={!saved || saving}
+          disabled={!saved || saving || !client.state.remoteAdministration}
           maxLength={INSTRUCTIONS_LIMIT}
           spellCheck={false}
           rows={12}
@@ -84,7 +84,7 @@ export default function GlobalInstructions({ client }: { client: ProxyClient }) 
           <button
             type="button"
             className="button primary"
-            disabled={!saved || saving || text === saved.text}
+            disabled={!saved || saving || text === saved.text || !client.state.remoteAdministration}
             onClick={() => void save()}
           >
             保存

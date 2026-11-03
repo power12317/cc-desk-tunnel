@@ -43,6 +43,7 @@ export default function AccountPanel({
   refresh: () => void;
 }) {
   const account = capabilities?.account;
+  const canManage = client.state.remoteAdministration;
   const { quotaReads } = usePrefs();
   const [working, setWorking] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -94,6 +95,9 @@ export default function AccountPanel({
             {error}
           </p>
         )}
+        {!canManage && (
+          <p className="muted">共享账号的登录、退出和全局配置由服务端本机管理员维护。</p>
+        )}
         <div className="account-identity">
           <div className="account-avatar">
             <UserRound />
@@ -106,7 +110,7 @@ export default function AccountPanel({
                 : (state?.subscriptionType ?? account?.subscriptionType ?? '账号信息尚未读取')}
             </p>
           </div>
-          {signedOut && !state.login && (
+          {canManage && signedOut && !state.login && (
             <button
               type="button"
               className="button primary"
@@ -119,7 +123,7 @@ export default function AccountPanel({
               {working ? '获取链接…' : '登录'}
             </button>
           )}
-          {state?.loggedIn && !confirmLogout && (
+          {canManage && state?.loggedIn && !confirmLogout && (
             <button
               type="button"
               className="button secondary"
@@ -136,7 +140,7 @@ export default function AccountPanel({
             {failure ?? state?.notice}
           </p>
         )}
-        {state?.loggedIn && confirmLogout && (
+        {canManage && state?.loggedIn && confirmLogout && (
           <div className="account-confirm" role="group" aria-label="确认退出登录">
             <p>退出后云端的登录凭据会被官方 CLI 清除，会话记录保留；再次使用需要重新登录。</p>
             <button

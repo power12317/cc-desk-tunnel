@@ -74,7 +74,13 @@ async function fixture(t: TestContext, stepMs = 1) {
   const webDirectory = join(dataDir, 'frontend');
   mkdirSync(webDirectory);
   writeFileSync(join(webDirectory, 'index.html'), '<!doctype html><title>Workbench</title>');
-  let server = createProxyServer({ token, dataDir, webDirectory, stepMs });
+  let server = createProxyServer({
+    token,
+    dataDir,
+    webDirectory,
+    stepMs,
+    allowRemoteAdministration: true,
+  });
   let url = await server.listen(0);
   const clients: Client[] = [];
   t.after(async () => {
@@ -121,7 +127,13 @@ async function fixture(t: TestContext, stepMs = 1) {
     async restart(password = token) {
       for (const client of clients) client.socket.terminate();
       await server.close();
-      server = createProxyServer({ token: password, dataDir, webDirectory, stepMs });
+      server = createProxyServer({
+        token: password,
+        dataDir,
+        webDirectory,
+        stepMs,
+        allowRemoteAdministration: true,
+      });
       url = await server.listen(0);
     },
   };

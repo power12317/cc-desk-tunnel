@@ -58,7 +58,7 @@ export class ClaudeStream {
       toolId: id,
       name,
       input: JSON.stringify(input, null, 2),
-      target: 'Linux',
+      target: process.platform === 'darwin' ? 'macOS' : 'Linux',
     });
     return tool;
   }

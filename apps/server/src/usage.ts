@@ -267,7 +267,13 @@ export class UsageLog {
         );
     }
   }
-  summary(now = Date.now()): Summary {
+  private scope(space?: string) {
+    return space === undefined
+      ? '1'
+      : `session_id IN (SELECT session_id FROM session_spaces WHERE space_id = '${space.replaceAll("'", "''")}')`;
+  }
+  summary(now = Date.now(), space?: string): Summary {
+    const scope = this.scope(space);
     const windows = this.database
       .prepare('SELECT name, started_at, resets_at, utilization FROM usage_windows ORDER BY rowid')
       .all() as {
@@ -276,7 +282,9 @@ export class UsageLog {
       resets_at: number | null;
       utilization: number | null;
     }[];
-    const first = this.database.prepare('SELECT MIN(at) AS at FROM api_requests').get() as {
+    const first = this.database
+      .prepare(`SELECT MIN(at) AS at FROM api_requests WHERE ${scope}`)
+      .get() as {
       at: number | null;
     };
     return {
@@ -292,7 +300,7 @@ export class UsageLog {
           resetsAt: window.resets_at && !expired ? new Date(window.resets_at).toISOString() : null,
           utilization: expired ? null : window.utilization,
           ...(this.database
-            .prepare(`SELECT ${totals} FROM api_requests WHERE at >= ?`)
+            .prepare(`SELECT ${totals} FROM api_requests WHERE at >= ? AND ${scope}`)
             .get(startedAt) as Omit<
             Summary['windows'][number],
             'name' | 'startedAt' | 'resetsAt' | 'utilization'
@@ -301,8 +309,8 @@ export class UsageLog {
       }),
     };
   }
-  query(query: UsageQuery, title: (sessionId: string) => string | null): Page {
-    const conditions = ['at >= ?', 'at < ?'];
+  query(query: UsageQuery, title: (sessionId: string) => string | null, space?: string): Page {
+    const conditions = ['at >= ?', 'at < ?', this.scope(space)];
     const range: (string | number)[] = [
       query.from ? Date.parse(query.from) : 0,
       query.to ? Date.parse(query.to) : Number.MAX_SAFE_INTEGER,

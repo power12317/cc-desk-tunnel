@@ -168,17 +168,17 @@ export function taskMessage(task: Task, due: number) {
 
 const storageKey = 'proxy-schedules';
 const progressKey = 'proxy-schedule-progress';
-function readProgress(): Progress {
+function readProgress(scope = ''): Progress {
   try {
-    const value = JSON.parse(localStorage.getItem(progressKey) ?? '{}');
+    const value = JSON.parse(localStorage.getItem(`${progressKey}:${scope}`) ?? '{}');
     return value && typeof value === 'object' ? value : {};
   } catch {
     return {};
   }
 }
-async function loadFile(): Promise<{ path: string; text: string }> {
-  if (window.desktop) return window.desktop.loadSchedules(formatTasks([]));
-  return { path: '', text: localStorage.getItem(storageKey) ?? '' };
+async function loadFile(scope: string): Promise<{ path: string; text: string }> {
+  if (window.desktop) return window.desktop.loadSchedules(formatTasks([]), scope);
+  return { path: '', text: localStorage.getItem(`${storageKey}:${scope}`) ?? '' };
 }
 
 export type Schedules = {
@@ -199,23 +199,29 @@ export function useSchedules(
   send: (task: Task, due: number) => Promise<boolean>,
   report?: (task: Task, outcome: Outcome) => void,
   enabled = true,
+  scope = '',
 ) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [problems, setProblems] = useState<string[]>([]);
   const [path, setPath] = useState('');
-  const [progress, setProgress] = useState<Progress>(readProgress);
-  const current = useRef({ tasks, progress, send, report });
-  current.current = { tasks, progress, send, report };
+  const [progress, setProgress] = useState<Progress>(() => readProgress(scope));
+  const current = useRef({ tasks, progress, send, report, scope, enabled });
+  current.current = { tasks, progress, send, report, scope, enabled };
   const busy = useRef(false);
 
-  const record = useCallback((update: (progress: Progress) => Progress) => {
-    const next = update(current.current.progress);
-    current.current.progress = next;
-    localStorage.setItem(progressKey, JSON.stringify(next));
-    setProgress(next);
-  }, []);
+  const record = useCallback(
+    (update: (progress: Progress) => Progress) => {
+      if (current.current.scope !== scope) return;
+      const next = update(current.current.progress);
+      current.current.progress = next;
+      localStorage.setItem(`${progressKey}:${scope}`, JSON.stringify(next));
+      setProgress(next);
+    },
+    [scope],
+  );
   const accept = useCallback(
     (text: string) => {
+      if (current.current.scope !== scope) return;
       const parsed = parseTasks(text);
       setProblems(parsed.broken ? [`配置文件未采用：${parsed.broken}`] : parsed.problems);
       // A file that cannot be read at all changes nothing: the tasks already loaded keep running.
@@ -232,19 +238,33 @@ export function useSchedules(
         ),
       );
     },
-    [record],
+    [record, scope],
   );
   useEffect(() => {
+    setTasks([]);
+    setProblems([]);
+    setPath('');
+    const saved = readProgress(scope);
+    setProgress(saved);
+    current.current.tasks = [];
+    current.current.progress = saved;
     if (!enabled) return;
-    void loadFile().then((file) => {
+    let active = true;
+    void loadFile(scope).then((file) => {
+      if (!active) return;
       setPath(file.path);
       accept(file.text);
     });
-    return window.desktop?.onSchedulesChanged(accept);
-  }, [accept, enabled]);
+    const off = window.desktop?.onSchedulesChanged(accept, scope);
+    return () => {
+      active = false;
+      off?.();
+    };
+  }, [accept, enabled, scope]);
 
   const settle = useCallback(
     (task: Task, status: Outcome['status'], text: string) => {
+      if (current.current.scope !== scope || !current.current.enabled) return;
       if (status !== 'sent') current.current.report?.(task, { at: Date.now(), status, text });
       record((progress) => ({
         ...progress,
@@ -255,11 +275,12 @@ export function useSchedules(
         },
       }));
     },
-    [record],
+    [record, scope],
   );
   const attempt = useCallback(
     async (task: Task, due: number) => {
       try {
+        if (current.current.scope !== scope || !current.current.enabled) return false;
         if (!(await current.current.send(task, due))) return false;
         settle(task, 'sent', '已发送');
       } catch (error) {
@@ -267,7 +288,7 @@ export function useSchedules(
       }
       return true;
     },
-    [settle],
+    [settle, scope],
   );
   useEffect(() => {
     if (!enabled) return;
@@ -296,11 +317,11 @@ export function useSchedules(
   const save = useCallback(
     async (tasks: Task[]) => {
       const text = formatTasks(tasks);
-      if (window.desktop) await window.desktop.saveSchedules(text);
-      else localStorage.setItem(storageKey, text);
+      if (window.desktop) await window.desktop.saveSchedules(text, scope);
+      else localStorage.setItem(`${storageKey}:${scope}`, text);
       accept(text);
     },
-    [accept],
+    [accept, scope],
   );
   const result: Schedules = {
     tasks,

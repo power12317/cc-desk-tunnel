@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import type { AddressInfo, Server, Socket } from 'node:net';
 import { join } from 'node:path';
@@ -28,6 +28,9 @@ const MAX_CHANNELS = 128;
 // it at the door of the device it runs on. A system prompt that named something of a connection would change
 // with every reconnect — the model's prompt cache would then match nothing of the conversation, and all of it
 // would be written to the cache again.
+const sshPath = (value: string, tokens = false) =>
+  `"${(tokens ? value.replaceAll('%', '%%') : value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+
 export function sessionSshPath(dataDir: string, sessionId: string) {
   return join(dataDir, 'session-ssh', `${sessionId}.conf`);
 }
@@ -35,7 +38,8 @@ export function sessionSsh(dataDir: string, sessionId: string, ssh: SshConnectio
   const configPath = sessionSshPath(dataDir, sessionId);
   mkdirSync(join(dataDir, 'session-ssh'), { recursive: true, mode: 0o700 });
   const next = `${configPath}.${randomBytes(6).toString('hex')}`;
-  writeFileSync(next, `Include ${JSON.stringify(ssh.configPath)}\n`, { mode: 0o600 });
+  // Copy configuration text rather than Include: OpenSSH expands Include as a glob, even inside quotes.
+  writeFileSync(next, readFileSync(ssh.configPath), { mode: 0o600 });
   renameSync(next, configPath);
   return { ...ssh, configPath };
 }
@@ -94,7 +98,7 @@ export function sshConfig(
   // The system of the device, which decides what its scripts are run by.
   device: DevicePlatform = 'win32',
 ) {
-  if (directory.includes('\n') || directory.includes('"'))
+  if (directory.includes('\n') || directory.includes('\r') || directory.includes('\0'))
     throw new Error('Unsupported data directory');
   const shared = sharedConnectionPath(directory, platform);
   return {
@@ -110,8 +114,8 @@ export function sshConfig(
       '  HostName 127.0.0.1',
       `  Port ${port}`,
       `  User ${username}`,
-      `  IdentityFile "${join(directory, 'identity')}"`,
-      `  UserKnownHostsFile "${join(directory, 'known_hosts')}"`,
+      `  IdentityFile ${sshPath(join(directory, 'identity'), true)}`,
+      `  UserKnownHostsFile ${sshPath(join(directory, 'known_hosts'), true)}`,
       '  IdentitiesOnly yes',
       '  BatchMode yes',
       '  StrictHostKeyChecking yes',
@@ -126,7 +130,7 @@ export function sshConfig(
       // The first command opens a connection that the following ones run over, and that stays for a while
       // after the last; it ends with the tunnel, whose close cuts it.
       ...(shared
-        ? ['  ControlMaster auto', `  ControlPath "${shared}"`, '  ControlPersist 600']
+        ? ['  ControlMaster auto', `  ControlPath ${sshPath(shared, true)}`, '  ControlPersist 600']
         : []),
       '',
     ].join('\n'),

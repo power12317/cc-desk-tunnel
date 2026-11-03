@@ -85,3 +85,26 @@ test('native server fails before opening history storage when transport config i
     /TLS/,
   );
 });
+
+test('managed Linux/Docker keeps its runtime and update paths; macOS reuses the existing CLI without managed writes', () => {
+  const env = {
+    ...native,
+    PROXY_PROGRAM_DIR: '/data/program',
+    PROXY_RUNTIME_DIR: '/opt/runtime',
+    CLAUDE_PATH: '/opt/runtime/cli/bin/claude',
+  };
+  const docker = environmentConfig(env, '/data/state', 'linux').options;
+  assert.equal(docker.claude?.managedRuntime, true);
+  assert.equal(docker.allowRemoteAdministration, true);
+  assert.equal(docker.updates?.programDir, '/data/program');
+  assert.equal(docker.updates?.runtimeDir, '/opt/runtime');
+  const mac = environmentConfig(
+    { ...native, CLAUDE_PATH: '/Users/example/.local/bin/claude' },
+    '/state',
+    'darwin',
+  ).options;
+  assert.equal(mac.claude?.executable, '/Users/example/.local/bin/claude');
+  assert.equal(mac.claude?.managedRuntime, false);
+  assert.equal(mac.allowRemoteAdministration, false);
+  assert.equal(mac.updates, undefined);
+});

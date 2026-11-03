@@ -87,7 +87,7 @@ async function connected(t) {
     await delay(20);
   }
   // What a session's own configuration includes: the device's, which stays through reconnects.
-  const config = join(dataDir, 'devices', id, 'ssh_config');
+  const config = join(dataDir, 'devices', `default.${id}`, 'ssh_config');
   for (const deadline = Date.now() + 5000; !existsSync(config);) {
     assert.ok(Date.now() < deadline, 'the device got no SSH configuration');
     await delay(20);

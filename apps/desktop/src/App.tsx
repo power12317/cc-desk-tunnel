@@ -59,7 +59,7 @@ import { exportSession } from './exportSession.ts';
 import { onSharedChange, saveShared, shared, useShared } from './shared.ts';
 import { useNotifications } from './notifications.ts';
 import { folderName, isInside, isNewer, pathKey, withProject } from './paths.ts';
-import { getPrefs, setPrefs, toggled, usePrefs } from './prefs.ts';
+import { getPrefs, setPrefs, setPrefsScope, toggled, usePrefs } from './prefs.ts';
 import { actions, comboOf, keyFor, show as comboText } from './shortcuts.ts';
 import type { Action } from './shortcuts.ts';
 import Rail from './Rail.tsx';
@@ -103,9 +103,16 @@ type OpenMenu = MenuPosition &
   );
 const narrow = () => matchMedia('(max-width: 700px)').matches;
 // The computer's projects, which the windows of its connections share (see shared.ts).
-function savedProjects(value: unknown = shared('projects')): string[] {
+function projectSpaces(value: unknown = shared('projects')): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+function savedProjects(scope: string | null, spaces = projectSpaces()): string[] {
   try {
-    value ??= JSON.parse(localStorage.getItem('proxy-projects') ?? '[]');
+    const value: unknown = scope
+      ? (spaces[scope] ?? JSON.parse(localStorage.getItem(`proxy-projects:${scope}`) ?? '[]'))
+      : [];
     return Array.isArray(value)
       ? value.filter((item): item is string => typeof item === 'string')
       : [];
@@ -167,10 +174,10 @@ export function App({
     if (state.status !== 'disconnected' && state.status !== 'connecting') setLocalSettings(null);
   }, [state.status]);
   const refreshed = useRef(new Set<string>());
-  const [projects, setProjects] = useState(savedProjects);
+  const [projects, setProjects] = useState<string[]>([]);
   // The folders that hold sessions without a project; new ones are made in the first.
   const [workspaceRoots, setWorkspaceRoots] = useState<string[]>([]);
-  const [drafts, setDraft] = useDrafts();
+  const [drafts, setDraft] = useDrafts(state.scope);
   const [scenario, setScenario] = useState<Scenario>('chat');
   const [slashOpen, setSlashOpen] = useState(false);
   // The side column is shown beside the page on a wide window and laid over it on a narrow one.
@@ -489,19 +496,45 @@ export function App({
   useEffect(() => {
     if (connected) void window.desktop?.workspaceRoots().then(setWorkspaceRoots);
   }, [connected]);
+  // Unattributed legacy lists stay on disk but are not adopted by an arbitrary new key.
+  const projectScope = useRef<string | null>(null);
   useEffect(() => {
-    localStorage.setItem('proxy-projects', JSON.stringify(projects));
-    saveShared('projects', projects);
-  }, [projects]);
+    if (projectScope.current !== state.scope) {
+      projectScope.current = state.scope;
+      setPrefsScope(state.scope);
+      setProjects(savedProjects(state.scope));
+      refreshed.current.clear();
+      setPlace({ page: 'chat', section: browser ? 'general' : 'account', sessionId: null });
+      trail.current = {
+        places: [{ page: 'chat', section: browser ? 'general' : 'account', sessionId: null }],
+        at: 0,
+      };
+      setWorkspaceRoots([]);
+      notifications.clear();
+      setError(null);
+      setCreateOpen(false);
+      setDeleteSession(null);
+      setRenameSession(null);
+      setRenameProject(null);
+      setRepointProject(null);
+      setSlashOpen(false);
+      setAbsent(new Set());
+      return;
+    }
+    if (state.scope) {
+      localStorage.setItem(`proxy-projects:${state.scope}`, JSON.stringify(projects));
+      saveShared('projects', { ...projectSpaces(), [state.scope]: projects });
+    }
+  }, [state.scope, projects]);
   useEffect(
     () =>
       onSharedChange('projects', (value) => {
-        const next = savedProjects(value);
+        const next = savedProjects(client.state.scope, projectSpaces(value));
         setProjects((current) =>
           JSON.stringify(current) === JSON.stringify(next) ? current : next,
         );
       }),
-    [],
+    [client],
   );
   // Each session's native state is read once when it is first shown idle.
   useEffect(() => {
@@ -577,6 +610,7 @@ export function App({
                 waits: getPrefs().connection,
               })
             ).url,
+          form.url,
         );
       } else {
         client.connect(form.url, form.token, await thisDevice());
@@ -727,6 +761,7 @@ export function App({
         )
       )
         return false;
+      const scope = client.state.scope;
       let session: Session | undefined;
       if (task.target.type === 'session') {
         const { sessionId } = task.target;
@@ -744,6 +779,7 @@ export function App({
         // Creating a session moved the live stream to it; the session being read takes it back.
         if (selectedId) client.select(selectedId);
       }
+      if (scope !== client.state.scope) return false;
       if (
         (task.model && task.model !== session.model) ||
         (task.effort && task.effort !== session.effort)
@@ -755,6 +791,7 @@ export function App({
           model: task.model ?? session.model,
           effort: task.effort ?? session.effort,
         });
+      if (scope !== client.state.scope) return false;
       await client.request({
         type: 'message.send',
         sessionId: session.id,
@@ -769,7 +806,8 @@ export function App({
         title: '定时任务未发出',
         body: `${task.name}：${outcome.text}`,
       }),
-    host.schedules,
+    host.schedules && connected && !!state.scope,
+    state.scope ?? '',
   );
   // Where a session of another computer is to be on this one; null when the user gives none.
   async function placeHere(session: Session) {

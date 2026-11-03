@@ -421,7 +421,14 @@ handle('proxy:connect', async (event, config) => {
         ? path.join(process.resourcesPath, 'app.asar.unpacked/electron')
         : undefined,
       // Where Claude finds the scheduled tasks to edit; the service names the variable, not the path.
-      environment: { CC_DESK_TUNNEL_SCHEDULES: schedulesPath() },
+      workspaceEnvironment: (space) => {
+        schedulesIdentity = `${config.url}|${space}`;
+        schedulesScope = require('node:crypto')
+          .createHash('sha256')
+          .update(schedulesIdentity)
+          .digest('hex');
+        return { CC_DESK_TUNNEL_SCHEDULES: schedulesPath() };
+      },
       log,
       // The system's proxy settings (manual, script or automatic detection) as Chromium reads them.
       resolveProxy: (url) => session.defaultSession.resolveProxy(url),
@@ -515,18 +522,21 @@ handle('drafts:save', (_event, drafts) => replaceFile(draftsPath(), JSON.stringi
 // Scheduled tasks are one JSON file that the window, the user and Claude over SSH may all edit. The window
 // decides what the text means; here it is only read, written and watched. An editor's byte-order mark is
 // dropped.
-const schedulesPath = () => path.join(app.getPath('userData'), 'schedules.json');
+let schedulesScope = 'unassigned';
+let schedulesIdentity;
+const schedulesPath = () => path.join(app.getPath('userData'), `schedules-${schedulesScope}.json`);
 const readSchedules = () => readFileSync(schedulesPath(), 'utf8').replace(/^\uFEFF/, '');
 let schedules;
-handle('schedules:load', (_event, initial) => {
+handle('schedules:load', (_event, initial, scope) => {
+  if (scope !== undefined && scope !== schedulesIdentity) throw new Error('Schedule space changed');
   if (!existsSync(schedulesPath())) replaceFile(schedulesPath(), String(initial));
   // An edit made outside the window is noticed by looking at the file every two seconds.
   if (schedules === undefined) {
-    let stamp = 0;
+    let stamp = '';
     setInterval(() => {
       let text;
       try {
-        const modified = statSync(schedulesPath()).mtimeMs;
+        const modified = `${schedulesPath()}:${statSync(schedulesPath()).mtimeMs}`;
         if (modified === stamp) return;
         stamp = modified;
         text = readSchedules();
@@ -535,13 +545,18 @@ handle('schedules:load', (_event, initial) => {
       }
       if (text === schedules) return;
       schedules = text;
-      BrowserWindow.getAllWindows()[0]?.webContents.send('schedules:changed', text);
+      BrowserWindow.getAllWindows()[0]?.webContents.send(
+        'schedules:changed',
+        text,
+        schedulesIdentity,
+      );
     }, 2000);
   }
   schedules = readSchedules();
   return { path: schedulesPath(), text: schedules };
 });
-handle('schedules:save', (_event, text) => {
+handle('schedules:save', (_event, text, scope) => {
+  if (scope !== undefined && scope !== schedulesIdentity) throw new Error('Schedule space changed');
   schedules = String(text);
   replaceFile(schedulesPath(), schedules);
 });
