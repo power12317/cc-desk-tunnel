@@ -6,6 +6,7 @@ import type { ClaudeOptions } from './claude.ts';
 import { remotePrompt } from './claude.ts';
 import type { SshConnection } from './tunnel.ts';
 import { readFileSync } from 'node:fs';
+import { prepareNativePty } from './native-pty.ts';
 import headless from '@xterm/headless';
 import serialize from '@xterm/addon-serialize';
 
@@ -127,6 +128,7 @@ export class NativeTerminal {
     exit: (code: number | null) => void | Promise<void>,
     spawn: TerminalSpawner = spawnPty,
   ) {
+    if (spawn === spawnPty) prepareNativePty();
     const { screen, ...spawnOptions } = options;
     this.cols = options.cols;
     this.rows = options.rows;
