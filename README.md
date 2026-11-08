@@ -1,6 +1,6 @@
 # CC Desk Tunnel（CC 桌面隧道）
 
-> 服务端版本与官方最新版保持一致，当前为 `0.3.9`（协议 22）；直接使用官方客户端。此仓库仅调整服务端，支持访问密钥空间隔离和 macOS 原生运行，并保留 Linux Docker/Compose 部署。服务端与镜像发布于 `power12317/cc-desk-tunnel`。
+> 服务端版本与官方最新版保持一致，当前为 `0.3.13`（协议 24）；直接使用官方客户端。此仓库仅调整服务端，支持访问密钥空间隔离和 macOS 原生运行，并保留 Linux Docker/Compose 部署。服务端与镜像发布于 `power12317/cc-desk-tunnel`。
 
 **简体中文** | [English](README.en.md)
 
@@ -8,7 +8,7 @@
 
 Claude Code（简称 CC）运行在一台 Linux 服务器上；项目代码、编译器和各种工具都留在 Windows 本机。CC Desk Tunnel 把两端接起来：服务器上是一个容器，Windows 上是一个桌面客户端，Claude 通过一条加密的反向 SSH 通道在你的电脑上读写文件、执行命令。
 
-[下载](https://github.com/power12317/cc-desk-tunnel/releases/latest) · [快速开始](#快速开始) · [安全须知](#安全须知) · [文档](#文档) · 许可：[Apache-2.0](LICENSE)
+**下载**：[图形客户端](#图形客户端) · [终端客户端 ccdt](#终端客户端-ccdt) · [服务端](#1-部署服务端) · [全部版本](https://github.com/power12317/cc-desk-tunnel/releases) | [快速开始](#快速开始) · [安全须知](#安全须知) · [文档](#文档) · 许可：[Apache-2.0](LICENSE)
 
 > [!WARNING]
 > **本项目主要由 AI 编写**，由个人维护，没有经过专业的安全审计，可能存在尚未发现的缺陷。它会让一台服务器获得在你电脑上执行命令的能力，使用前请读完[安全须知](#安全须知)和[账号须知](#账号须知)，并自行评估风险。
@@ -52,7 +52,7 @@ Claude Code（简称 CC）运行在一台 Linux 服务器上；项目代码、�
 | --- | --- |
 | **项目与会话** | 按 Windows 文件夹分组；新建、改名、删除、搜索、分叉；从任意一条自己的消息“编辑重发” |
 | **对话过程** | 流式回复、思考摘要、工具调用的入参与结果；运行中追加消息、随时停止 |
-| **原生控制** | 模型、推理强度、审批模式、上下文占用与主动压缩、Claude Code 常用设置；需要时打开内嵌的原生终端 |
+| **原生控制** | 模型、推理强度、审批模式、上下文占用与主动压缩、Claude Code 常用设置；需要时一键在终端客户端 `ccdt` 里打开会话 |
 | **终端客户端** | `ccdt` 在自己的终端里打开原版 Claude Code，与图形客户端共用会话、上下文和调用统计 |
 | **账号与用量** | 在客户端里登录 / 退出云端的 Claude 账号，查看额度、重置时间和调用统计 |
 | **定时任务** | 到点向指定会话或新会话发送预设提示词，也可以直接让 Claude 帮你设置 |
@@ -62,9 +62,9 @@ Claude Code（简称 CC）运行在一台 Linux 服务器上；项目代码、�
 
 ## 快速开始
 
-以下快速开始使用 Docker/Compose。已有 Claude Code 安装与登录的 Mac mini 或 Linux 原生服务，见[原生服务运行方式](docs/native-server.md)；多台设备按服务密钥共享或隔离项目与话题，见[访问空间](docs/access-spaces.md)。
+以下快速开始使用 Docker/Compose。已有 Claude Code 安装与登录的 Mac mini 或 Linux 原生服务，见[原生服务运行方式](docs/native-server.md)；按服务密钥划分空间，见[访问空间](docs/access-spaces.md)。
 
-需要：一台有公网 IP 或域名的 Linux 服务器（x86_64；arm64 为实验性支持。推荐 Ubuntu，已安装 Docker），和一台 Windows 10 / 11 x64 电脑。macOS 与 Linux 上也有客户端，目前是实验性支持。
+需要：一台有公网 IP 或域名的 Linux 服务器（x86_64；arm64 为实验性支持。推荐 Ubuntu，已安装 Docker），和一台 Windows 10 / 11 x64 电脑。macOS 与 Linux 上也有图形客户端和 `ccdt`，目前都是实验性支持。
 
 **服务器不需要高配。** 编译、测试和各种开发工具都在 Windows 本机运行，服务器上只有 Claude Code 和一个轻量的代理服务，2 核 1 GB 内存的入门机型就能运行。只有打算让 Claude 直接在服务器上编译或跑重负载时，才需要按那些任务选配置。
 
@@ -96,21 +96,44 @@ sudo cc-desk-tunnel help      # 全部命令：更换凭据、备份恢复、证
 
 一般不需要上服务器升级：客户端的“设置 → 关于与更新”里可以直接升级服务端。手动安装、三种证书方式、备份恢复等见[部署操作手册](deploy/README.md)；已有 nginx 和域名时见[用 nginx 反代](deploy/nginx.md)。
 
-### 2. 安装 Windows 客户端
+### 2. 安装客户端
 
-从[发布页](https://github.com/power12317/cc-desk-tunnel/releases/latest)下载 `CC-Desk-Tunnel-Setup-<版本>-x64.exe` 并安装。安装包自带 PowerShell 7 和 OpenSSH，不需要另装任何东西。启动后填入上一步的三项信息并连接。
+客户端有两种，可以只装一种，也可以都装；都要与服务端同一版本。
 
-首次运行会遇到 SmartScreen 提示，处理方法见[杀毒软件与 SmartScreen](#杀毒软件与-smartscreen)。
+- **图形客户端**：桌面应用，按项目管理会话，对话过程折叠成摘要、可逐级展开。
+- **终端客户端 `ccdt`**：在自己的终端里使用原版 Claude Code，与图形客户端共用会话。
 
-macOS 与 Linux 的安装包在同一个发布页，安装方法见 [macOS 客户端](docs/macos.md)与 [Linux 客户端](docs/linux.md)。它们是实验性支持，没有签名，升级时需要重新下载安装。
+#### 图形客户端
 
-更习惯终端时，同一个发布页还有终端客户端 `ccdt` 的包（Windows、macOS、Linux），可以单独安装使用，见[终端客户端](docs/cli.md)。
+从[最新发布页](https://github.com/sun168567/cc-desk-tunnel/releases/latest)下载，页面开头的表格按系统列出了安装包，点击即下载：
+
+- Windows 10 / 11 x64：`.exe` 安装包。
+- macOS（实验性）：Apple 芯片或 Intel 的 `.dmg`，见 [macOS 客户端](docs/macos.md)。
+- Linux x64（实验性）：`.deb`，见 [Linux 客户端](docs/linux.md)。
+
+Windows 安装包自带 PowerShell 7 和 OpenSSH，不需要另装任何东西。启动后填入上一步的三项信息并连接。首次运行会遇到 SmartScreen 提示，处理方法见[杀毒软件与 SmartScreen](#杀毒软件与-smartscreen)。macOS 与 Linux 的客户端没有签名，升级时需要重新下载安装。
+
+#### 终端客户端 ccdt
+
+Windows，在 PowerShell 里运行：
+
+```powershell
+irm https://raw.githubusercontent.com/sun168567/cc-desk-tunnel/main/deploy/install-ccdt.ps1 | iex
+```
+
+macOS、Linux（实验性）：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sun168567/cc-desk-tunnel/main/deploy/install-ccdt.sh | sh
+```
+
+脚本从发布页下载最新的正式版，按 `SHA256SUMS` 校验后只为当前用户安装，并把 `ccdt` 加入 PATH，不需要管理员权限。装好后运行 `ccdt login` 登录服务端。服务端不是最新版时，先指定与它相同的版本，见[终端客户端](docs/cli.md#安装)。
 
 ### 3. 登录 Claude
 
 在客户端左下角的账号页登录你的 Claude 账号（走官方 `claude auth` 流程，登录凭据只保存在服务器上），添加一个项目文件夹，开始对话。
 
-需要浏览器访问时，在桌面「设置 → 常规 → 浏览器访问」中启用，再用服务凭据登录显示的地址；建议开启验证器两步验证。浏览器不提供本机项目管理或执行通道，使用范围、证书和登录设置见[浏览器访问](docs/server-web.md)。不使用时保留默认关闭即可。
+需要浏览器访问时，在桌面「设置 → 浏览器访问」中启用，再用服务凭据登录显示的地址；建议开启验证器两步验证。浏览器不提供本机项目管理或执行通道，使用范围、证书和登录设置见[浏览器访问](docs/server-web.md)。不使用时保留默认关闭即可。
 
 ## 安全须知
 

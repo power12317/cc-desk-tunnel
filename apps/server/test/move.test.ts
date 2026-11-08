@@ -131,20 +131,20 @@ test('a session from before computers were told apart becomes that of the first 
 test('a session taken to a computer of another system is told how that one runs scripts', (t) => {
   const { store, session } = fixture(t);
   ran(store, session.id);
-  assert.equal(store.promptValues(session.id).platform, 'win32');
+  assert.equal(store.promptValues(session.id).execution.platform, 'win32');
   const mac = { id: randomUUID(), name: 'MacBook', platform: 'darwin' as const };
   store.move(session.id, '/Users/me/项目', mac);
   const notice = store.notice(session.id);
   assert.match(notice, /Workspace: macOS\./);
   assert.match(notice, /is now "\/Users\/me\/项目" \(it was "D:\\\\项目 甲"\)/);
-  assert.match(notice, /RemoteCommand selects the workspace zsh\/bash/);
+  assert.match(notice, /RemoteCommand selects the workspace zsh/);
   assert.match(notice, /Every script MUST begin with cd -- '\/Users\/me\/项目'\./);
   assert.doesNotMatch(notice, /PowerShell/);
   assert.equal(store.notice(session.id), '');
   // The prompt stays what it was until a compaction: only then does it describe the Mac.
   assert.deepEqual(store.promptValues(session.id), {
     projectPath: 'D:\\项目 甲',
-    platform: 'win32',
+    execution: { platform: 'win32', shells: ['pwsh'] },
   });
   // A move on the Mac says nothing of systems again; the way back to Windows does.
   store.move(session.id, '/Users/me/别处', mac);
@@ -153,5 +153,65 @@ test('a session taken to a computer of another system is told how that one runs 
   assert.match(store.notice(session.id), /Workspace: Windows\..*Set-Location -LiteralPath/s);
   store.compacted(session.id);
   store.move(session.id, '/Users/me/项目', mac);
-  assert.equal(store.promptValues(session.id).platform, 'darwin');
+  assert.deepEqual(store.promptValues(session.id).execution, {
+    platform: 'darwin',
+    shells: ['zsh'],
+  });
+});
+
+test('other shells on the device, or another one preferred, are told once with the next message', (t) => {
+  const { store, session } = fixture(t);
+  ran(store, session.id);
+  assert.equal(store.notice(session.id), '');
+  // Git for Windows is installed: the device now has Git Bash as well.
+  store.equip(device.id, ['pwsh', 'bash']);
+  const added = store.notice(session.id);
+  assert.match(
+    added,
+    /^\[CC Desk Tunnel: the workspace shells or shell preference changed\. Workspace:/,
+  );
+  assert.match(added, /ssh device-bash for Git Bash/);
+  assert.doesNotMatch(added, /The user prefers/);
+  assert.equal(store.notice(session.id), '');
+  store.prefer(device.id, 'bash');
+  assert.match(
+    store.notice(session.id),
+    /workspace shells or shell preference changed\..*The user prefers Git Bash; use it/s,
+  );
+  store.prefer(device.id, null);
+  const noPreference = store.notice(session.id);
+  assert.match(noPreference, /workspace shells or shell preference changed/);
+  assert.doesNotMatch(noPreference, /The user prefers/);
+  // A preference for a shell the device does not have says nothing: there is nothing to choose between.
+  store.equip(device.id, ['pwsh']);
+  assert.match(store.notice(session.id), /workspace shells or shell preference changed/);
+  store.prefer(device.id, 'bash');
+  assert.equal(store.notice(session.id), '');
+  // The prompt stays what it was until a compaction, and names what is there then.
+  assert.deepEqual(store.promptValues(session.id).execution, {
+    platform: 'win32',
+    shells: ['pwsh'],
+  });
+  store.equip(device.id, ['pwsh', 'bash']);
+  store.notice(session.id);
+  store.compacted(session.id);
+  assert.deepEqual(store.promptValues(session.id).execution, {
+    platform: 'win32',
+    shells: ['pwsh', 'bash'],
+    shell: 'bash',
+  });
+});
+
+test('a prompt from before shells were named keeps naming those of its first run after', (t) => {
+  const made = fixture(t);
+  const { session } = made;
+  ran(made.store, session.id);
+  made.store.database.exec(
+    "UPDATE sessions SET metadata = json_remove(metadata, '$.prompt.shells', '$.prompt.shell')",
+  );
+  const store = made.reopen();
+  store.equip(device.id, ['pwsh', 'bash']);
+  // The prompt of its next run names Git Bash, so nothing is told.
+  assert.equal(store.notice(session.id), '');
+  assert.deepEqual(store.promptValues(session.id).execution.shells, ['pwsh', 'bash']);
 });

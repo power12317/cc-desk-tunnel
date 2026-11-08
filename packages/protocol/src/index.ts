@@ -4,7 +4,7 @@ import { webCertificateStateSchema } from './web-certificate.ts';
 export * from './web.ts';
 export * from './web-certificate.ts';
 
-export const PROTOCOL_VERSION = 22;
+export const PROTOCOL_VERSION = 24;
 // The release each protocol version began with, from 0.2.4 on: a client newer than its service signs in with
 // the service's number to have it upgrade (see the README). A new number adds its line here.
 export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
@@ -21,6 +21,8 @@ export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
   '0.3.6': 20,
   '0.3.7': 21,
   '0.3.8': 22,
+  '0.3.10': 23,
+  '0.3.12': 24,
 };
 export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
@@ -112,6 +114,15 @@ export const nativeSettingsSchema = z.object({
   toolSearch: toggle,
 });
 export type NativeSettings = z.infer<typeof nativeSettingsSchema>;
+// The service's own setting, not the CLI's: before the prompt cache of an idle session lapses, it compacts the session
+// with /compact, as the compact button does, so that the summary reads the cache instead of the whole context anew.
+// Only a session whose last turn wrote a one-hour cache and holds `minTokens` or more, `afterMinutes` after that turn.
+export const idleCompactionSchema = z.object({
+  enabled: z.boolean(),
+  afterMinutes: z.number().int().min(10).max(55),
+  minTokens: z.number().int().min(20_000).max(1_000_000),
+});
+export type IdleCompaction = z.infer<typeof idleCompactionSchema>;
 export const contextUsageSchema = z.object({
   model: z.string(),
   usedTokens: z.number().nonnegative(),
@@ -303,6 +314,9 @@ export const eventPayloadSchema = z.discriminatedUnion('type', [
     context: contextUsageSchema.nullable(),
     usage: nativeUsageSchema.nullable(),
     rateLimits: rateLimitsSchema.nullable(),
+    // How long the prompt cache the turn wrote lasts, as its requests were billed; only on a turn's end, and only when
+    // it wrote one.
+    cacheTtl: z.enum(['5m', '1h']).optional(),
     errors: z.object({ context: z.string().optional(), usage: z.string().optional() }).optional(),
   }),
   z.object({ type: z.literal('native.title'), title: z.string().min(1).max(120) }),
@@ -409,6 +423,10 @@ export type SessionEvent = z.infer<typeof eventSchema>;
 // The systems a device may run. What runs its scripts and how its paths are written follow from it.
 export const devicePlatformSchema = z.enum(['win32', 'darwin', 'linux']);
 export type DevicePlatform = z.infer<typeof devicePlatformSchema>;
+// The shells a device runs Claude's scripts in, each under a host name of its own (`device-pwsh` and so on): PowerShell
+// 7 on Windows, and Git Bash too where Git for Windows is installed; on macOS and Linux the user's own shell.
+export const deviceShellSchema = z.enum(['pwsh', 'bash', 'zsh']);
+export type DeviceShell = z.infer<typeof deviceShellSchema>;
 // One of the user's computers: the client there makes the ID once and keeps it. Its system is recorded
 // unless it is Windows, which is what every computer was before others were supported.
 export const deviceSchema = z.object({
@@ -443,11 +461,16 @@ export const sessionSchema = z.object({
       device: id.optional(),
       // The system the prompt describes; Windows where none is recorded.
       platform: devicePlatformSchema.optional(),
+      // The device's shells the prompt names, and the one it says the user prefers, if any.
+      shells: z.array(deviceShellSchema).optional(),
+      shell: deviceShellSchema.optional(),
       told: z
         .object({
           projectPath: z.string(),
           device: id.optional(),
           platform: devicePlatformSchema.optional(),
+          shells: z.array(deviceShellSchema).optional(),
+          shell: deviceShellSchema.optional(),
         })
         .optional(),
       compacted: z.boolean().optional(),
@@ -532,6 +555,18 @@ export const commandSchema = z.discriminatedUnion('type', [
       ...request,
       values: nativeSettingsSchema.partial().strict(),
     })
+    .strict(),
+  z.object({ type: z.literal('compaction.get'), ...request }).strict(),
+  z
+    .object({
+      type: z.literal('compaction.update'),
+      ...request,
+      values: idleCompactionSchema.partial().strict(),
+    })
+    .strict(),
+  // The shell the user prefers Claude to run scripts in on the computer of this connection; null leaves it to Claude.
+  z
+    .object({ type: z.literal('device.shell'), ...request, shell: deviceShellSchema.nullable() })
     .strict(),
   z.object({ type: z.literal('instructions.get'), ...request }).strict(),
   z
@@ -633,7 +668,8 @@ export const commandSchema = z.discriminatedUnion('type', [
       type: z.literal('terminal.open'),
       ...request,
       sessionId: id,
-      // The terminal continues the session's conversation, and what it adds is recorded in the session afterwards.
+      // Sent by ccdt before 0.3.10, when a terminal could also be one apart from the session's conversation. Every
+      // terminal continues it now, and what it adds is recorded in the session; the field is let through, unread.
       continueSession: z.boolean().optional(),
       cols: z.number().int().min(20).max(400),
       rows: z.number().int().min(5).max(160),
@@ -797,6 +833,12 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('account.state'), ...accountStateSchema.shape }),
   z.object({ type: z.literal('settings.state'), requestId: id, values: nativeSettingsSchema }),
+  // Sent to every connection when it changes; the one that asked finds its request ID.
+  z.object({
+    type: z.literal('compaction.state'),
+    requestId: id.optional(),
+    values: idleCompactionSchema,
+  }),
   z.object({
     type: z.literal('instructions.state'),
     requestId: id,
@@ -868,7 +910,13 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('devices'),
     devices: z.array(
-      deviceSchema.extend({ ready: z.boolean(), server: z.literal(true).optional() }),
+      deviceSchema.extend({
+        ready: z.boolean(),
+        server: z.literal(true).optional(),
+        // The shells the computer runs scripts in, and the one its user prefers, if any; none for the service.
+        shells: z.array(deviceShellSchema).optional(),
+        shell: deviceShellSchema.optional(),
+      }),
     ),
   }),
   // The execution channel runs over connections the device opens to this same address. `secret` signs them
@@ -905,6 +953,8 @@ export const tunnelCredentialsSchema = z
       .regex(/^[a-zA-Z0-9_.\\@-]+$/),
     privateKey: z.string().min(1).max(16384),
     hostPublicKey: z.string().regex(/^ssh-ed25519 [A-Za-z0-9+/=]+$/),
+    // What the SSH service runs scripts in.
+    shells: z.array(deviceShellSchema).min(1).max(3),
   })
   .strict();
 export type TunnelCredentials = z.infer<typeof tunnelCredentialsSchema>;

@@ -62,6 +62,8 @@ process.stdout.write('DONE ' + result.how + '\\r\\n');
     let screen = '';
     child.onData((data) => (screen += data));
     const exited = new Promise((resolve) => child.onExit(resolve));
+    // A test that fails part way leaves no terminal behind to keep the run going.
+    t.after(() => child.kill('SIGKILL'));
     const until = async (pattern) => {
       for (let i = 0; i < 100 && !pattern.test(screen); i++)
         await new Promise((r) => setTimeout(r, 100));
@@ -89,6 +91,54 @@ process.stdout.write('DONE ' + result.how + '\\r\\n');
     assert.ok(
       messages.some((m) => m.type === 'terminal.resize' && m.cols === 100 && m.rows === 30),
     );
+  },
+);
+
+// `ccdt config` in a terminal, without a service to reach: this computer's settings are gone through with the arrow
+// keys, a wait typed in and kept.
+test(
+  'in a real terminal, ccdt config changes a setting typed in',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const pty = require('node-pty');
+    const directory = mkdtempSync(join(tmpdir(), 'ccdt-config-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const child = pty.spawn(
+      process.execPath,
+      [join(import.meta.dirname, '../bin/ccdt.mjs'), 'config'],
+      {
+        cols: 110,
+        rows: 20,
+        cwd: directory,
+        env: { ...process.env, CCDT_CONFIG_DIR: directory, CCDT_TOKEN: '' },
+        name: 'xterm-256color',
+      },
+    );
+    let screen = '';
+    child.onData((data) => (screen += data));
+    const exited = new Promise((resolve) => child.onExit(resolve));
+    // A test that fails part way leaves no terminal behind to keep the run going.
+    t.after(() => child.kill('SIGKILL'));
+    const until = async (pattern) => {
+      for (let i = 0; i < 100 && !pattern.test(screen); i++)
+        await new Promise((r) => setTimeout(r, 100));
+      assert.match(screen, pattern);
+    };
+    await until(/ccdt 设置/);
+    assert.match(screen, /只能改本机的设置/);
+    child.write('\x1b[B');
+    await new Promise((r) => setTimeout(r, 200));
+    child.write('\r');
+    await until(/本机 SSH 服务启动（写 default/);
+    child.write('30');
+    await new Promise((r) => setTimeout(r, 200));
+    child.write('\r');
+    await until(/30 秒/);
+    child.write('\x1b');
+    assert.equal((await exited).exitCode, 0);
+    assert.deepEqual(JSON.parse(readFileSync(join(directory, 'config.json'), 'utf8')).waits, {
+      ssh: 30,
+    });
   },
 );
 

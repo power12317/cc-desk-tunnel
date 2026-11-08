@@ -27,11 +27,13 @@ for await (const line of createInterface({ input: process.stdin })) {
     });
   } else if (message.type === 'user') {
     sessionId = message.session_id;
-    const config = /Scripts MUST use ssh -F ("(?:\\.|[^"\\])*") device-script/.exec(prompt)?.[1];
+    const alias = /Scripts MUST use ssh (device-(?:zsh|bash)) with a quoted heredoc/.exec(
+      prompt,
+    )?.[1];
     const directory = /Every script MUST begin with (cd -- [\s\S]+?)\. Scripts MUST NOT/.exec(
       prompt,
     )?.[1];
-    if (!config || !directory) throw new Error('Expected workspace prompt');
+    if (!alias || !directory) throw new Error('Expected workspace prompt');
     send({
       type: 'system',
       subtype: 'init',
@@ -41,7 +43,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       permissionMode: 'auto',
     });
     send(message);
-    const result = spawnSync('bash', ['-c', `ssh -F ${config} device-script`], {
+    const result = spawnSync('bash', ['-c', `ssh ${alias}`], {
       input: `${directory}\nprintf '%s\\n' "$CC_TEST_DEVICE" "$PWD"\nprintf 'offline stderr' >&2\nexit 7\n`,
       encoding: 'utf8',
       timeout: 15000,

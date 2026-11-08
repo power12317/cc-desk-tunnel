@@ -29,7 +29,7 @@ Windows 上的 shell 命令与脚本使用 `pwsh.exe`（PowerShell 7）。终端
 
 ## 发布
 
-直接在 `main` 提交、推送，通过 Git SSH 推送 `v<官方版本>` 标签触发 `package` 工作流，无须本机 GitHub CLI 登录。发布前核对官方 Latest 的版本和协议；当前为 `0.3.9`、协议 22。
+直接在 `main` 提交、推送，通过 Git SSH 推送 `v<官方版本>` 标签触发 `package` 工作流，无须本机 GitHub CLI 登录。发布前核对官方 Latest 的版本和协议；当前为 `0.3.13`、协议 24。
 
 `package` 构建服务端程序包及 amd64/arm64 镜像。客户端附件由 `scripts/fetch-official-clients.mjs` 从官方 Latest 获取版本清单，确认版本、协议一致，再按固定标签下载并核对大小及 SHA256；不重新编译或打包客户端。工作流等待同提交的主线检查成功，生成 `release.json` 与 `SHA256SUMS`、公开 Release，并更新镜像 `latest`。
 

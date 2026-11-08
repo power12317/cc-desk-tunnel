@@ -1,21 +1,28 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { query, getSessionInfo } from '@anthropic-ai/claude-agent-sdk';
-import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type {
-  DevicePlatform,
-  Effort,
-  EventPayload,
-  NativeMetrics,
-  PermissionMode,
-} from '@cc-desk-tunnel/protocol';
-import { bashDoubleQuoted, deviceTerms } from './device-terms.ts';
+import type { Query, SDKSessionInfo, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { Effort, EventPayload, NativeMetrics, PermissionMode } from '@cc-desk-tunnel/protocol';
+import { deviceTerms } from './device-terms.ts';
+import type { Execution } from './device-terms.ts';
 import { ClaudeStream } from './claude-stream.ts';
 import type { SshConnection } from './tunnel.ts';
+import { cacheTtl } from './idle-compaction.ts';
 import { loginOf, nativeCapabilities, nativeMetrics, Quotas } from './native-controls.ts';
 import type { NativeInput } from './native-input.ts';
 import { readNativeSettings } from './native-settings.ts';
 import { questionTally } from './question.ts';
+
+// Whether the native session is on record once a run or a terminal let it go, for the clients to offer compacting it.
+// It is recorded last, so that the page of history a client opens the session with holds it.
+export function nativeContext(sessionId: string, info: SDKSessionInfo | undefined) {
+  return {
+    type: 'native.context',
+    nativeSessionId: sessionId,
+    persisted: !!info,
+    updatedAt: info ? new Date(info.lastModified).toISOString() : undefined,
+  } satisfies EventPayload;
+}
 
 // Whether reasoning summaries are asked for. A settings file that cannot be read leaves them on.
 function thinkingShown() {
@@ -42,8 +49,8 @@ export type ClaudeRun = {
   // The session whose Linux directory holds this session's native history; itself unless it is a fork.
   nativeRoot: string;
   projectPath: string;
-  // The system of the device, as the session's prompt has it.
-  platform: DevicePlatform;
+  // How commands run on the device, as the session's prompt has it.
+  execution: Execution;
   permissionMode: PermissionMode;
   model?: string | null;
   effort?: Effort | null;
@@ -87,22 +94,25 @@ const quotaOf =
   (login: string, asked = false) =>
   (query: Query) =>
     quotas.through(login, query, { asked });
+// The PATH of a session's CLI, with its own `ssh`, `scp` and `sftp` first (see `sessionSsh`).
+export function sshPath(
+  ssh: SshConnection | undefined,
+  path = process.env.PATH ?? '',
+): Record<string, string> {
+  return ssh?.bin ? { PATH: path ? `${ssh.bin}${delimiter}${path}` : ssh.bin } : {};
+}
+
 // `sessionId` is the proxy's name for the session, which a scheduled task needs to continue it.
-export function remotePrompt(
-  projectPath: string,
-  ssh: SshConnection,
-  sessionId: string,
-  platform: DevicePlatform = 'win32',
-) {
-  const terms = deviceTerms(platform, projectPath);
+export function remotePrompt(projectPath: string, sessionId: string, execution: Execution) {
+  const terms = deviceTerms(execution, projectPath);
   return [
-    `Workspace: ${terms.name}, ${projectPath}.\nAccess: local SSH endpoint; config ${ssh.configPath}.\nSession: ${sessionId}.`,
-    'All project reads, edits, searches, builds, tests and commands MUST use Bash over SSH with this config. Direct local Read/Edit of project files is prohibited, except for temporary image inspection below.',
-    `Scripts MUST use ssh -F ${bashDoubleQuoted(ssh.configPath)} device-script with a quoted heredoc ${terms.script}`,
+    `Workspace: ${terms.name}, ${projectPath}.\nAccess: local SSH endpoint; aliases device and device-<shell>.\nSession: ${sessionId}.`,
+    'All project reads, edits, searches, builds, tests and commands MUST use Bash over SSH with these aliases. Direct local Read/Edit of project files is prohibited, except for temporary image inspection below.',
+    terms.script,
     `Ordinary command lines and SCP/SFTP MUST use alias device. ${terms.command} Image inspection MUST copy only the required image with SCP to a local temporary file, use Read, then delete the copy. Other direct local Read of workspace files is prohibited.`,
     'Commands MUST use appropriate Bash timeouts, including when run concurrently. Long-lived services/watchers MUST use background Bash tasks that keep SSH open for the required lifetime. Stopping a program MUST explicitly stop its workspace process. Assuming SSH closure guarantees either survival or termination is prohibited.',
     'An unavailable endpoint MUST be reported; local fallback is prohibited. Interrupted operations MUST be reported as outcome unknown. Their state MUST be verified before repeating side effects. SSH private keys MUST NOT be displayed, included in conversation or copied.',
-    'Schedules MUST use the workspace UTF-8 JSON file identified by CC_DESK_TUNNEL_SCHEDULES and follow its "说明" field. Changes apply within seconds. The application handles scheduled prompts; local cron is prohibited. Continuation tasks MUST use this session ID.',
+    'Schedules MUST use the workspace UTF-8 JSON file identified by CC_DESK_TUNNEL_SCHEDULES and follow its "说明" field. Changes apply within seconds. The desktop client handles scheduled prompts; local cron is prohibited. If CC_DESK_TUNNEL_SCHEDULES is empty, ccdt sends no scheduled prompts: report this instead of creating a schedule elsewhere. Continuation tasks MUST use this session ID.',
   ].join('\n\n');
 }
 
@@ -174,7 +184,7 @@ export async function runClaude(
           type: 'preset',
           preset: 'claude_code',
           ...(run.ssh
-            ? { append: remotePrompt(run.projectPath, run.ssh, run.sessionId, run.platform) }
+            ? { append: remotePrompt(run.projectPath, run.sessionId, run.execution) }
             : {}),
           snapshot: false,
         },
@@ -200,7 +210,7 @@ export async function runClaude(
           ],
         },
         maxTurns: options.maxTurns,
-        env: { ...process.env, ...options.environment },
+        env: { ...process.env, ...options.environment, ...sshPath(run.ssh) },
         stderr: (text) => {
           stderr = (stderr + text).slice(-8192);
         },
@@ -392,8 +402,11 @@ export async function runClaude(
         if (!run.signal.aborted) {
           try {
             const payload = await nativeMetrics(session, message, { quota: quotaOf(login) });
-            if (payload.type === 'native.metrics') metrics = payload;
-            run.emit(payload);
+            if (payload.type === 'native.metrics') {
+              metrics = payload;
+              const ttl = cacheTtl(message.usage);
+              run.emit(ttl ? { ...payload, cacheTtl: ttl } : payload);
+            } else run.emit(payload);
           } catch {
             run.emit({ type: 'native.notice', text: '本轮原生状态未能读取；任务结果不受影响。' });
           }
@@ -419,12 +432,7 @@ export async function runClaude(
     run.signal.removeEventListener('abort', stop);
   }
   const context = await getSessionInfo(run.sessionId, { dir: cwd });
-  run.emit({
-    type: 'native.context',
-    nativeSessionId: run.sessionId,
-    persisted: !!context,
-    updatedAt: context ? new Date(context.lastModified).toISOString() : undefined,
-  });
+  run.emit(nativeContext(run.sessionId, context));
   if (context?.summary?.trim())
     run.emit({ type: 'native.title', title: context.summary.trim().slice(0, 120) });
   for (const tool of mapper.tools.values())

@@ -116,6 +116,22 @@ async function create(client: Client, requestId = randomUUID()) {
   return result.sessionId!;
 }
 
+test('shell preferences stay in the authenticated space and compaction settings require local maintenance', async (t) => {
+  const f = await fixture(t);
+  const a1 = await f.client(a),
+    b1 = await f.client(b, a1.id);
+  f.server.store.equip(a1.id, ['zsh', 'bash'], 'A');
+  f.server.store.equip(b1.id, ['zsh', 'bash'], 'B');
+  assert.equal((await a1.request({ type: 'device.shell', shell: 'zsh' })).ok, true);
+  assert.equal((await b1.request({ type: 'device.shell', shell: 'bash' })).ok, true);
+  assert.equal(f.server.store.execution(a1.id, 'darwin', 'A').shell, 'zsh');
+  assert.equal(f.server.store.execution(b1.id, 'darwin', 'B').shell, 'bash');
+  assert.equal(f.server.store.execution(a1.id, 'darwin').shell, undefined);
+  const result = await b1.request({ type: 'compaction.update', values: { enabled: true } });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'local_admin_required');
+});
+
 test('A1/A2 share resources and controls; B1 cannot see or operate guessed IDs, events, images or usage', async (t) => {
   const f = await fixture(t);
   const a1 = await f.client(a),
@@ -390,6 +406,7 @@ test('official tunnel frames bind the secret to its control connection; device s
       username: 'user',
       privateKey: 'offline-unused',
       hostPublicKey: 'ssh-ed25519 AAAA',
+      shells: ['zsh'],
     });
     await client.next('tunnel.ready');
   }
@@ -465,8 +482,8 @@ test('browser and phone cookies inherit space; changing login revokes the prior 
     phone = await browser(cookieA),
     cookieB = await login(b),
     foreign = await browser(cookieB);
-  assert.equal(phone.ready.version, '0.3.9');
-  assert.equal(phone.ready.protocolVersion, 22);
+  assert.equal(phone.ready.version, '0.3.13');
+  assert.equal(phone.ready.protocolVersion, 24);
   assert.equal(phone.ready.sessions[0].id, id);
   assert.equal(foreign.ready.sessions.length, 0);
   const mine = await a1.data({ type: 'web.settings.get' }, 'web.settings.state');

@@ -9,13 +9,13 @@ import type {
   AccountState,
   Command,
   Device,
+  IdleCompaction,
   NativeCapabilities,
   NativeMetrics,
   ServerMessage,
   ServiceUpdate,
   Session,
   SessionEvent,
-  TerminalControl,
 } from '@cc-desk-tunnel/protocol';
 
 type Response = Extract<ServerMessage, { type: 'response' }>;
@@ -27,6 +27,7 @@ type DataMessage = Extract<
       | 'usage.page'
       | 'session.stats'
       | 'settings.state'
+      | 'compaction.state'
       | 'instructions.state'
       | 'web.settings.state'
       | 'web.totp.setup'
@@ -40,6 +41,8 @@ type Replies = {
   'session.stats': 'session.stats';
   'settings.get': 'settings.state';
   'settings.update': 'settings.state';
+  'compaction.get': 'compaction.state';
+  'compaction.update': 'compaction.state';
   'instructions.get': 'instructions.state';
   'instructions.update': 'instructions.state';
   'web.settings.get': 'web.settings.state';
@@ -52,10 +55,7 @@ type Replies = {
   'web.certificate.set': 'web.certificate.state';
   'web.certificate.reset': 'web.certificate.state';
 };
-type TerminalMessage = Extract<
-  ServerMessage,
-  { type: 'terminal.opened' | 'terminal.data' | 'terminal.closed' }
->;
+
 type NewCommand = Command extends infer C
   ? C extends Command
     ? Omit<C, 'requestId'>
@@ -76,6 +76,7 @@ export class RequestInterruptedError extends Error {
       'quota.watch',
       'session.stats',
       'settings.get',
+      'compaction.get',
       'instructions.get',
       'web.settings.get',
       'web.certificate.get',
@@ -137,6 +138,8 @@ export type ClientState = {
   capabilities: NativeCapabilities | null;
   metrics: NativeMetrics | null;
   account: AccountState | null;
+  // The service's idle compaction setting, as it last said; every window is told when it changes.
+  compaction: IdleCompaction | null;
   // What each session's background tasks last said of themselves, by task: kept while the window is open
   // and nowhere else.
   progress: Record<string, Record<string, TaskProgress>>;
@@ -170,11 +173,11 @@ export class ProxyClient {
     capabilities: null,
     metrics: null,
     account: null,
+    compaction: null,
     progress: {},
   };
   results = new Map<string, DataMessage>();
   listeners = new Set<() => void>();
-  terminalListeners = new Set<(message: TerminalMessage) => void>();
   socket: WebSocket | null = null;
   credentials: {
     url: string;
@@ -273,6 +276,7 @@ export class ProxyClient {
       capabilities: null,
       metrics: null,
       account: null,
+      compaction: null,
     });
     this.open();
   }
@@ -479,6 +483,10 @@ export class ProxyClient {
         message.type === 'web.certificate.state'
       ) {
         if (this.pending.has(message.requestId)) this.results.set(message.requestId, message);
+      } else if (message.type === 'compaction.state') {
+        if (message.requestId && this.pending.has(message.requestId))
+          this.results.set(message.requestId, message);
+        this.update({ compaction: message.values });
       } else if (message.type === 'service.update') {
         const { type: _type, ...update } = message;
         this.update(
@@ -496,12 +504,6 @@ export class ProxyClient {
         this.update({ devices: message.devices });
       } else if (message.type === 'session.updated') {
         this.upsert(message.session);
-      } else if (
-        message.type === 'terminal.opened' ||
-        message.type === 'terminal.data' ||
-        message.type === 'terminal.closed'
-      ) {
-        for (const listener of this.terminalListeners) listener(message);
       } else if (message.type === 'session.deleted') {
         const events = { ...this.state.events };
         const live = { ...this.state.live };
@@ -556,7 +558,10 @@ export class ProxyClient {
           this.activity.set(message.event.sessionId, at);
         if (payload.type === 'native.capabilities') this.update({ capabilities: payload });
         if (payload.type === 'native.metrics') this.update({ metrics: payload });
-        if (!this.cacheOrder.includes(message.event.sessionId)) return;
+        // The service streams the shown session's events, and only some events of the others (a terminal's quota goes
+        // to every connection): one of those in a cached history would move its cursor past what was never received,
+        // and showing that session again would not fetch it.
+        if (message.event.sessionId !== this.state.selectedId) return;
         this.streamEvents.push(message.event);
         this.streamTimer ??= setTimeout(() => this.flushStream(), 32);
       } else if (message.type === 'session.fragment') {
@@ -799,23 +804,14 @@ export class ProxyClient {
     this.update({ selectedId: sessionId, events, live, history });
     if (this.state.status === 'connected') this.load(sessionId);
   }
-  // Terminal output bypasses the state store; xterm consumes it directly.
-  onTerminal = (listener: (message: TerminalMessage) => void) => {
-    this.terminalListeners.add(listener);
-    return () => {
-      this.terminalListeners.delete(listener);
-    };
-  };
+
   // A browser's user is still there; its login's idle time starts over.
   markActive() {
     if (!this.state.browser || this.socket?.readyState !== WebSocket.OPEN) return false;
     this.socket.send(JSON.stringify({ type: 'web.activity' }));
     return true;
   }
-  terminalControl(command: TerminalControl) {
-    if (this.state.status === 'connected' && this.socket?.readyState === WebSocket.OPEN)
-      this.socket.send(JSON.stringify(command));
-  }
+
   // Data replies arrive just before their response frame.
   async fetch<T extends keyof Replies>(command: Extract<NewCommand, { type: T }>) {
     const response = await this.request(command);

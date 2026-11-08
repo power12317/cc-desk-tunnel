@@ -112,7 +112,9 @@ caffeinate -i node --env-file=runtime/local/service.env apps/server/src/main.ts
 
 macOS 原生服务启动时会自动检查 `node-pty` 实际加载的 `spawn-helper`，缺少执行权限时仅补当前用户的执行权限。重新安装依赖后也会执行检查，无须手动运行 `chmod`；权限修复失败会在服务启动时报告具体辅助程序路径。Linux 和 Windows 不执行此修复。
 
-客户端使用官方 `0.3.9`，填写 `wss://目标服务器的局域网IP:8787/ws`。在目标服务器上读取实际证书指纹：
+图形客户端的内嵌原生终端已随官方更新改为“在 ccdt 中打开”，目标电脑需安装同版本 `ccdt`，由系统终端承载交互式 CLI；Web 不提供终端。
+
+客户端使用官方 `0.3.13`，填写 `wss://目标服务器的局域网IP:8787/ws`。在目标服务器上读取实际证书指纹：
 
 ```sh
 openssl x509 -in runtime/local/tls/server.crt -noout -fingerprint -sha256

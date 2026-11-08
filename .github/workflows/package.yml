@@ -47,9 +47,9 @@ jobs:
               --draft --title "CC Desk Tunnel $version" --notes-file artifacts/release/notes.md
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-  # The server image of the release, for amd64 and arm64 (see images.yml).
+  # Publish images only after the official client assets and server bundle have succeeded.
   images:
-    needs: prepare
+    needs: [prepare, clients, server]
     if: needs.prepare.outputs.release != ''
     uses: ./.github/workflows/images.yml
     permissions:

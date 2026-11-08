@@ -60,6 +60,7 @@ import { onSharedChange, saveShared, shared, useShared } from './shared.ts';
 import { useNotifications } from './notifications.ts';
 import { folderName, isInside, isNewer, pathKey, withProject } from './paths.ts';
 import { getPrefs, setPrefs, toggled, usePrefs } from './prefs.ts';
+import { UPDATE_TICK_MS, lookDue } from './update-check.ts';
 import { actions, comboOf, keyFor, show as comboText } from './shortcuts.ts';
 import type { Action } from './shortcuts.ts';
 import Rail from './Rail.tsx';
@@ -75,10 +76,11 @@ import type { Section } from './SettingsPage.tsx';
 import Sidebar from './Sidebar.tsx';
 import TitleBar from './TitleBar.tsx';
 import type { BarMenu } from './TitleBar.tsx';
+import IdleReminder from './IdleReminder.tsx';
+import { CcdtDialog } from './CcdtDialog.tsx';
 import { IconButton, Menu } from './ui.tsx';
 import type { MenuItem, MenuPosition } from './ui.tsx';
 
-const NativeTerminal = lazy(() => import('./NativeTerminal.tsx'));
 // The notes of every version so far are read only when asked for, and stay out of what the window starts with.
 const ReleaseNotes = lazy(() => import('./ReleaseNotes.tsx'));
 
@@ -199,8 +201,8 @@ export function App({
   useEffect(() => {
     void window.desktop?.version().then(setVersion);
   }, []);
-  const [terminalSessionId, setTerminalSessionId] = useState<string | null>(null);
-  const closeTerminal = useCallback(() => setTerminalSessionId(null), []);
+  // Opening a session in ccdt found it not installed (`{}`), or of another release (`installed`).
+  const [ccdtNeeded, setCcdtNeeded] = useState<{ installed?: string } | null>(null);
   const [menu, setMenu] = useState<OpenMenu | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
   const [createOpen, setCreateOpen] = useState(false);
@@ -302,17 +304,12 @@ export function App({
       ? { ...(metrics ?? state.metrics)!, rateLimits: quota.rateLimits }
       : (metrics ?? state.metrics);
   const canCompact = !!latest(events, 'native.context')?.persisted;
-  // A native terminal anywhere keeps what the CLI holds for all sessions, the account and its status, from
-  // being read or changed, save the quota the account page asks for; this window's own terminal,
-  // `terminalSessionId`, also takes the window.
-  const anyTerminal = state.sessions.some((session) => session.activeRun?.surface === 'terminal');
+  // A chat run holds the CLI's state while it goes; a terminal holds only its own session.
+  const anyChat = state.sessions.some(
+    (session) => session.activeRun && session.activeRun.surface !== 'terminal',
+  );
   const controlsDisabled =
-    !connected ||
-    busy ||
-    refreshing ||
-    !!selected?.activeRun ||
-    !!history?.loading ||
-    !!terminalSessionId;
+    !connected || busy || refreshing || !!selected?.activeRun || !!history?.loading;
   // A run is that of the computer its session is on, whichever window of whichever computer started it; any
   // of them answers and stops it while that computer can be reached.
   const ownsRun = !!selected?.activeRun && (!away || remote);
@@ -380,11 +377,38 @@ export function App({
     });
   };
 
-  // A check or an upgrade of the service that failed says why.
-  const update = state.update;
+  // A check or an upgrade of the service that failed says why to whoever asked for it. The checks a window makes by
+  // itself while it is in use fail quietly, to be made again within the hour.
+  const live = state.update;
+  const asked = useRef(false);
   useEffect(() => {
-    if (update?.state === 'failed' && update.detail) setError(update.detail);
-  }, [update]);
+    if (live?.state === 'failed' && live.detail && asked.current) setError(live.detail);
+    if (live && !['checking', 'installing'].includes(live.state)) asked.current = false;
+  }, [live]);
+  // While the service looks again, the release it found last stays offered.
+  const [settled, setSettled] = useState(live);
+  useEffect(() => {
+    if (live?.state !== 'checking') setSettled(live);
+  }, [live]);
+  const update =
+    live?.state === 'checking' && settled && ['available', 'manual'].includes(settled.state)
+      ? settled
+      : live;
+  // While this window is shown, the service looks for a new release at least hourly (see update-check.ts).
+  useEffect(() => {
+    if (!host.serviceManagement || !nativeMode || !connected) return;
+    const look = () => {
+      if (!document.hidden && lookDue(client.state.update, Date.now()))
+        void client.request({ type: 'service.update.check' }).catch(() => {});
+    };
+    look();
+    const timer = setInterval(look, UPDATE_TICK_MS);
+    document.addEventListener('visibilitychange', look);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', look);
+    };
+  }, [client, nativeMode, connected]);
   const serviceUpdate = !nativeMode
     ? null
     : update?.state === 'available'
@@ -399,6 +423,7 @@ export function App({
               )
             )
               void act(async () => {
+                asked.current = true;
                 await client.request({ type: 'service.update.install', version: update.latest! });
               });
           },
@@ -428,6 +453,7 @@ export function App({
               disabled: busy || update?.state === 'checking',
               run: () => {
                 void act(async () => {
+                  asked.current = true;
                   await client.request({ type: 'service.update.check' });
                 });
               },
@@ -481,10 +507,7 @@ export function App({
       });
   }, [state.status]);
   useEffect(() => {
-    if (!connected) {
-      setTerminalSessionId(null);
-      setMenu(null);
-    }
+    if (!connected) setMenu(null);
   }, [connected]);
   useEffect(() => {
     if (connected) void window.desktop?.workspaceRoots().then(setWorkspaceRoots);
@@ -511,16 +534,20 @@ export function App({
       !connected ||
       history?.loading ||
       selected.activeRun ||
-      anyTerminal ||
+      anyChat ||
       refreshed.current.has(selected.id)
     )
       return;
     refreshed.current.add(selected.id);
     void refreshStatus(selected.id);
-  }, [nativeMode, selected?.id, connected, history?.loading, selected?.activeRun, anyTerminal]);
+  }, [nativeMode, selected?.id, connected, history?.loading, selected?.activeRun, anyChat]);
   useEffect(() => {
     if (nativeMode && connected) void client.request({ type: 'account.status' }).catch(() => {});
   }, [nativeMode, connected, accountOpen]);
+  // The service's idle compaction setting decides which reminder a session shows.
+  useEffect(() => {
+    if (nativeMode && connected) void client.request({ type: 'compaction.get' }).catch(() => {});
+  }, [nativeMode, connected]);
   // Each connection tells the service anew whether this client wants the quota kept current.
   useEffect(() => {
     if (nativeMode && connected)
@@ -534,7 +561,7 @@ export function App({
       state.capabilities ||
       state.account?.loggedIn !== true ||
       refreshing ||
-      state.sessions.some((session) => session.activeRun)
+      anyChat
     )
       return;
     void refreshStatus();
@@ -646,10 +673,28 @@ export function App({
   const show = (sessionId: string) => visit({ ...place, page: 'chat', sessionId });
   const open = (page: Page, section: Section = place.section) => {
     if (!host.schedules && page === 'schedules') return;
-    if (!host.nativeSettings && (section === 'claude' || section === 'account'))
+    if (
+      (!host.nativeSettings &&
+        ['connection', 'context', 'account', 'claude', 'instructions'].includes(section)) ||
+      (section === 'connection' && !window.desktop)
+    )
       section = 'general';
     visit({ page, section, sessionId: client.state.selectedId });
   };
+  // The session in ccdt, signed in as this window is; the window says how to install ccdt where it is missing.
+  async function openInCcdt(session: Session) {
+    await act(async () => {
+      const opened = await window.desktop!.openInCcdt({
+        url: form.url,
+        fingerprint: form.fingerprint,
+        token: form.token,
+        sessionId: session.id,
+        projectPath: onThis(session) ? session.projectPath : undefined,
+      });
+      if (opened.status !== 'opened')
+        setCcdtNeeded(opened.status === 'outdated' ? { installed: opened.installed } : {});
+    });
+  }
   // `quota`: asked for on the account page, which reads the plan quota anew.
   async function refreshStatus(sessionId = selected?.id ?? sessions[0]?.id, quota = false) {
     if (!sessionId || refreshing) return;
@@ -712,7 +757,7 @@ export function App({
     else await addProject();
   }
   // A due task is an ordinary message: to its session once that is idle, or to a session made for it. It is
-  // never queued into a run, and waits while this window's native terminal is open.
+  // never queued into a run, and waits while a terminal holds a session of this computer.
   const notifications = useNotifications(client, () =>
     place.page === 'chat' ? client.state.selectedId : null,
   );
@@ -847,8 +892,7 @@ export function App({
     });
   }
   function sessionMenu(session: Session): MenuItem[] {
-    const idle = connected && !busy && !terminalSessionId;
-    const anyRun = state.sessions.some((item) => !!item.activeRun);
+    const idle = connected && !busy;
     const pinned = prefs.pinnedSessions.includes(session.id);
     return [
       {
@@ -885,7 +929,7 @@ export function App({
       {
         label: '导出为 Markdown',
         icon: <FileDown />,
-        disabled: !connected || !!terminalSessionId,
+        disabled: !connected,
         run: () => {
           void act(async () => {
             await exportSession(client, session);
@@ -905,22 +949,25 @@ export function App({
             },
           ]
         : []),
+      ...(nativeMode && host.terminalClient
+        ? [
+            {
+              label: '在 ccdt 中打开',
+              icon: <SquareTerminal />,
+              // ccdt takes over a terminal of its own left on the session; a chat run has to end first.
+              disabled: !idle || (!!session.activeRun && session.activeRun.surface !== 'terminal'),
+              run: () => {
+                void openInCcdt(session);
+              },
+            },
+          ]
+        : []),
       ...(nativeMode
         ? [
             {
-              label: '原生终端',
-              icon: <SquareTerminal />,
-              // A terminal takes only its own session; others may be running.
-              disabled: !idle || !!session.activeRun,
-              run: () => {
-                show(session.id);
-                setTerminalSessionId(session.id);
-              },
-            },
-            {
               label: '刷新状态',
               icon: <RefreshCw />,
-              disabled: !idle || anyRun || refreshing || !!history?.loading,
+              disabled: !idle || anyChat || refreshing || !!history?.loading,
               run: () => {
                 void refreshStatus(session.id);
               },
@@ -932,7 +979,7 @@ export function App({
         icon: <Trash2 />,
         danger: true,
         separated: true,
-        disabled: !connected || !!session.activeRun || !!terminalSessionId,
+        disabled: !connected || !!session.activeRun,
         run: () => {
           setError(null);
           closeSide();
@@ -948,7 +995,7 @@ export function App({
       {
         label: '新建会话',
         icon: <Plus />,
-        disabled: !connected || busy || refreshing || !!terminalSessionId,
+        disabled: !connected || busy || refreshing,
         run: () => {
           void createInProject(path);
         },
@@ -963,7 +1010,7 @@ export function App({
       {
         label: '更改文件夹…',
         icon: <FolderInput />,
-        disabled: !connected || busy || !!terminalSessionId,
+        disabled: !connected || busy,
         run: () => {
           if (!window.desktop) return setRepointProject(path);
           void act(async () => {
@@ -1117,7 +1164,7 @@ export function App({
       icon: <Settings />,
       hint: hint('settings'),
       separated: true,
-      run: () => open('settings', nativeMode && host.nativeSettings ? 'claude' : 'general'),
+      run: () => open('settings', 'general'),
     },
     { label: '帮助', icon: <CircleHelp />, run: () => open('settings', 'help') },
     {
@@ -1128,7 +1175,7 @@ export function App({
     },
   ];
   const toggleSide = () => setSideOpen((value) => !value);
-  const canCreate = connected && !busy && !refreshing && !terminalSessionId;
+  const canCreate = connected && !busy && !refreshing;
   const barMenus: BarMenu[] = [
     {
       label: '文件',
@@ -1145,7 +1192,7 @@ export function App({
           ? [
               {
                 label: '添加项目…',
-                disabled: !connected || busy || !!terminalSessionId,
+                disabled: !connected || busy,
                 run: () => {
                   void addProject();
                 },
@@ -1154,7 +1201,7 @@ export function App({
           : []),
         {
           label: '导出当前会话…',
-          disabled: !selected || !connected || !!terminalSessionId,
+          disabled: !selected || !connected,
           separated: true,
           run: () => {
             void act(async () => {
@@ -1172,7 +1219,7 @@ export function App({
         {
           label: '查找对话内容',
           hint: hint('find'),
-          disabled: !selected || place.page !== 'chat' || !!terminalSessionId,
+          disabled: !selected || place.page !== 'chat',
           run: () => setFindRequest((value) => value + 1),
         },
         { label: sideOpen ? '收起侧栏' : '展开侧栏', hint: hint('toggleSide'), run: toggleSide },
@@ -1219,31 +1266,23 @@ export function App({
       ],
     },
   ];
-  // The shortcuts, as the user set them. A key press that something else already took, or that belongs to the
-  // native terminal or an open dialog, is left alone.
+  // The shortcuts, as the user set them. A key press that something else already took, or that belongs to an open
+  // dialog, is left alone.
   const keys = useRef<(event: KeyboardEvent) => void>(() => {});
   keys.current = (event) => {
     if (event.defaultPrevented || !prefs.shortcuts.enabled) return;
     if (!connected && state.status !== 'reconnecting') return;
-    if (
-      (event.target as Element | null)?.closest?.('.native-terminal') ||
-      document.querySelector('dialog[open]')
-    )
-      return;
+    if (document.querySelector('dialog[open]')) return;
     const combo = comboOf(event);
     const action = combo && actions.find((item) => keyFor(prefs, item.id) === combo)?.id;
     if (!action) return;
     const run: Record<Action, (() => void) | false | undefined> = {
-      back: !terminalSessionId && (() => step(-1)),
-      forward: !terminalSessionId && (() => step(1)),
+      back: () => step(-1),
+      forward: () => step(1),
       toggleSide,
       newSession: canCreate && (() => void newSession()),
       settings: () => open('settings'),
-      find:
-        !!selected &&
-        place.page === 'chat' &&
-        !terminalSessionId &&
-        (() => setFindRequest((value) => value + 1)),
+      find: !!selected && place.page === 'chat' && (() => setFindRequest((value) => value + 1)),
       zoomIn: window.desktop && (() => window.desktop!.zoom(1)),
       zoomOut: window.desktop && (() => window.desktop!.zoom(-1)),
       zoomReset: window.desktop && (() => window.desktop!.zoom(0)),
@@ -1384,11 +1423,17 @@ export function App({
                     items: barMenus.find((item) => item.label === menu.label)?.items ?? [],
                   };
   const sectionNames: Record<Section, string> = {
-    account: '账号与额度',
-    claude: 'Claude Code 设置',
-    general: '常规设置',
-    notifications: '通知设置',
+    general: '常规',
+    appearance: '外观',
+    connection: '连接',
+    notifications: '通知',
     shortcuts: '快捷键',
+    context: '上下文与缓存',
+    shell: 'Shell',
+    web: '浏览器访问',
+    account: '账号与额度',
+    claude: 'CLI 设置',
+    instructions: '全局说明',
     help: '帮助',
     about: '关于与更新',
   };
@@ -1405,8 +1450,8 @@ export function App({
               ? '定时任务'
               : sectionNames[place.section]
         }
-        back={!terminalSessionId && stepAvailable(-1) ? () => step(-1) : undefined}
-        forward={!terminalSessionId && stepAvailable(1) ? () => step(1) : undefined}
+        back={stepAvailable(-1) ? () => step(-1) : undefined}
+        forward={stepAvailable(1) ? () => step(1) : undefined}
         sideOpen={sideOpen}
         toggleSide={toggleSide}
         menus={barMenus}
@@ -1436,6 +1481,7 @@ export function App({
           section={place.section}
           go={(section) => open('settings', section)}
           native={nativeMode}
+          here={state.devices.find((device) => device.id === state.device?.id)}
           form={form}
           changeForm={changeForm}
           workspaceRoot={workspaceRoots[0] ?? ''}
@@ -1484,7 +1530,6 @@ export function App({
             connected={connected}
             busy={busy}
             refreshing={refreshing}
-            terminalOpen={!!terminalSessionId}
             notifications={notifications}
             select={show}
             newSession={() => {
@@ -1502,21 +1547,6 @@ export function App({
             projectMenu={(path, position) => setMenu({ kind: 'project', path, ...position })}
           />
           <main className="workspace">
-            {terminalSessionId && connected && (
-              <Suspense
-                fallback={
-                  <div className="history-status" role="status">
-                    加载原生终端
-                  </div>
-                }
-              >
-                <NativeTerminal
-                  client={client}
-                  sessionId={terminalSessionId}
-                  onClose={closeTerminal}
-                />
-              </Suspense>
-            )}
             {currentError && (
               <div className="error-banner" role="alert">
                 <span>{currentError}</span>
@@ -1672,7 +1702,21 @@ export function App({
                 <p>设备“{selected.device?.name ?? '未知设备'}”未连接，当前只能查看会话。</p>
               </div>
             )}
-            {selected && (!away || remote) && !terminalSessionId && (
+            {nativeMode && selected && !selected.activeRun && (!away || remote) && (
+              <IdleReminder
+                events={events}
+                settings={state.compaction}
+                canCompact={canCompact && !controlsDisabled}
+                compact={() => {
+                  void compact();
+                }}
+                startFresh={() => {
+                  if (onThis(selected)) void createInProject(selected.projectPath);
+                  else void newSession();
+                }}
+              />
+            )}
+            {selected && (!away || remote) && (
               <Composer
                 openAccount={() => open('settings', 'account')}
                 session={selected}
@@ -1720,7 +1764,7 @@ export function App({
                 stop={stopRun}
               />
             )}
-            {selected && (!away || (browser && remote)) && !terminalSessionId && (
+            {selected && (!away || (browser && remote)) && (
               <SessionBar
                 client={client}
                 sessionId={selected.id}
@@ -1828,6 +1872,13 @@ export function App({
               setRenameSession(null);
             });
           }}
+        />
+      )}
+      {ccdtNeeded && (
+        <CcdtDialog
+          installed={ccdtNeeded.installed}
+          version={version}
+          close={() => setCcdtNeeded(null)}
         />
       )}
       {notesDialog}

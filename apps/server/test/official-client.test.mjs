@@ -16,7 +16,7 @@ import { defaultCertificate } from './fixtures/web-certificates.ts';
 import { openProxyBridge } from '../../desktop/electron/proxy-bridge.mjs';
 
 test(
-  'official 0.3.9 bridge + protocol 22 + offline SDK + real SSH: shared-space routing, isolation and reconnect',
+  'official 0.3.13 bridge + protocol 24 + offline SDK + real SSH: shared-space routing, isolation and reconnect',
   { skip: process.platform === 'win32', timeout: 60000 },
   async (t) => {
     const directory = mkdtempSync('/tmp/cc-native-spaces-');
@@ -81,8 +81,8 @@ test(
       }
       const ready = await next((m) => m.type === 'ready');
       assert.equal(ready.type, 'ready');
-      assert.equal(PROTOCOL_VERSION, 22);
-      assert.equal(ready.version, '0.3.9');
+      assert.equal(PROTOCOL_VERSION, 24);
+      assert.equal(ready.version, '0.3.13');
       async function request(command) {
         const requestId = randomUUID();
         socket.send(JSON.stringify({ ...command, requestId }));
@@ -121,7 +121,7 @@ test(
       temporary = join(directory, 'inspected.png');
     writeFileSync(picture, 'offline image fixture');
     const transfer = transferPaths(picture).source;
-    const sshPath = join(dataDir, 'session-ssh', `${id}.conf`);
+    const sshPath = join(dataDir, 'session-ssh', id, 'config');
     await promisify(execFile)(
       'bash',
       ['-c', `scp -q -F ${bashDoubleQuoted(sshPath)} ${transfer} ${bashDoubleQuoted(temporary)}`],
@@ -140,7 +140,7 @@ test(
     );
     assert.equal(readFileSync(uploaded, 'utf8'), 'offline image fixture');
     rmSync(temporary);
-    const config = readFileSync(join(dataDir, 'session-ssh', `${id}.conf`), 'utf8');
+    const config = readFileSync(join(dataDir, 'session-ssh', id, 'config'), 'utf8');
     assert.ok(config.includes(`A.${a1.id}`));
     assert.ok(!config.includes(`A.${a2.id}`));
     assert.equal(
@@ -154,7 +154,7 @@ test(
       true,
     );
     await routed();
-    assert.equal(readFileSync(join(dataDir, 'session-ssh', `${id}.conf`), 'utf8'), config);
+    assert.equal(readFileSync(join(dataDir, 'session-ssh', id, 'config'), 'utf8'), config);
     assert.equal(
       (
         await returned.request({

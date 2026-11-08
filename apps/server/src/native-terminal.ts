@@ -1,9 +1,9 @@
 import { spawn as spawnPty } from 'node-pty';
 import type { IPty } from 'node-pty';
-import { platformOf } from '@cc-desk-tunnel/protocol';
 import type { Session } from '@cc-desk-tunnel/protocol';
 import type { ClaudeOptions } from './claude.ts';
-import { remotePrompt } from './claude.ts';
+import { remotePrompt, sshPath } from './claude.ts';
+import type { Execution } from './device-terms.ts';
 import type { SshConnection } from './tunnel.ts';
 import { readFileSync } from 'node:fs';
 import { prepareNativePty } from './native-pty.ts';
@@ -20,6 +20,7 @@ export function definedEnvironment(env: NodeJS.ProcessEnv): Record<string, strin
 export function terminalEnvironment(
   options: ClaudeOptions,
   inherited: NodeJS.ProcessEnv = process.env,
+  ssh?: SshConnection,
 ): Record<string, string> {
   const env = definedEnvironment(inherited);
   // Reuse the private provider configuration as a normal CLI process environment.
@@ -32,6 +33,7 @@ export function terminalEnvironment(
   const result: Record<string, string> = {
     ...env,
     ...options.environment,
+    ...sshPath(ssh, inherited.PATH),
     TERM: 'xterm-256color',
   };
   // The CLI reports what started it from these. A terminal runs the interactive CLI and must never pass for an SDK
@@ -52,29 +54,31 @@ export type TerminalSpawner = (
   options: { cwd: string; cols: number; rows: number; env: Record<string, string>; name: string },
 ) => TerminalProcess;
 
-// A terminal that continues the session works in the same native session as its chat runs: it resumes it, or
-// creates it under the session's ID when there is none yet. `settingsPath` replaces the provider's settings then,
-// with the terminal's hooks added to them.
+// A terminal works in the same native session as its session's chat runs: it resumes it, or creates it under the
+// session's ID when there is none yet. `settingsPath` replaces the provider's settings, with the terminal's hooks
+// added to them.
 export function terminalArguments(
   options: ClaudeOptions,
   session: Session,
-  ssh?: SshConnection,
-  continued?: { resume: boolean; settingsPath: string },
+  ssh: SshConnection | undefined,
+  {
+    resume,
+    settingsPath,
+    execution,
+  }: { resume: boolean; settingsPath: string; execution: Execution },
 ) {
-  const settingsPath = continued?.settingsPath ?? options.settingsPath;
   return [
-    ...(continued ? [continued.resume ? '--resume' : '--session-id', session.id] : []),
+    resume ? '--resume' : '--session-id',
+    session.id,
     '--permission-mode',
     session.permissionMode === 'default' ? 'manual' : session.permissionMode,
     ...(ssh
-      ? [
-          '--append-system-prompt',
-          remotePrompt(session.projectPath, ssh, session.id, platformOf(session.device)),
-        ]
+      ? ['--append-system-prompt', remotePrompt(session.projectPath, session.id, execution)]
       : []),
     ...((session.model ?? options.model) ? ['--model', session.model ?? options.model!] : []),
     ...(session.effort ? ['--effort', session.effort] : []),
-    ...(settingsPath ? ['--settings', settingsPath] : []),
+    '--settings',
+    settingsPath,
   ];
 }
 
@@ -82,12 +86,15 @@ export function terminalArguments(
 const RESET =
   '\x1b[?25h\x1b[?2004l\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b[<u\x1b[>4;0m' +
   '\x1b[?1049l\x1b[0m\x1b[H\x1b[2J\x1b[3J';
+// Output is gathered for this long, or up to this much, before it is sent: a CLI redraws its screen in many small
+// writes, and one frame for them all is one message, one relay and one render instead of many. VS Code's terminal
+// gathers its output the same way.
+const GATHER_MS = 5;
+const GATHER_LIMIT = 16384;
 // Keyboard modes a CLI may switch on that the screen model does not keep: the kitty keyboard protocol and xterm's
 // modifyOtherKeys.
 const KEYBOARD = /\x1b\[>(\d+)u|\x1b\[<\d*u|\x1b\[>4;(\d+)m/g;
 
-// Native control sessions have their own CLI history; no terminal transcript is persisted by the proxy.
-//
 // A terminal that keeps running while no client shows it (`screen`) also writes its output to a screen model. A client
 // that attaches gets the current screen first, then the live output; one that stops acknowledging for 30 s is
 // detached and the CLI goes on. Without a screen the terminal ends then. The screen model, the snapshot and the modes
@@ -103,6 +110,8 @@ export class NativeTerminal {
   private resolveClosed!: () => void;
   private killTimer?: ReturnType<typeof setTimeout>;
   private ackTimer?: ReturnType<typeof setTimeout>;
+  private gathered = '';
+  private gatherTimer?: ReturnType<typeof setTimeout>;
   private cols: number;
   private rows: number;
   private data: (text: string, bytes: number) => void;
@@ -158,9 +167,10 @@ export class NativeTerminal {
         }
       }
       if (this.pending) this.pending.push(text);
-      else if (this.attached) this.send(text);
+      else if (this.attached) this.gather(text);
     });
     this.process.onExit(({ exitCode }) => {
+      this.flush();
       this.exited = true;
       if (process.platform !== 'win32') {
         try {
@@ -176,6 +186,18 @@ export class NativeTerminal {
         .catch(() => {})
         .finally(() => this.resolveClosed());
     });
+  }
+  private gather(text: string) {
+    this.gathered += text;
+    if (this.gathered.length >= GATHER_LIMIT) this.flush();
+    else this.gatherTimer ??= setTimeout(() => this.flush(), GATHER_MS);
+  }
+  private flush() {
+    clearTimeout(this.gatherTimer);
+    this.gatherTimer = undefined;
+    const text = this.gathered;
+    this.gathered = '';
+    if (text) this.send(text);
   }
   private send(text: string) {
     // UTF-16 boundaries stay intact, while each frame is well below the control-frame limit.
@@ -202,6 +224,9 @@ export class NativeTerminal {
   // The CLI runs on unwatched: its output only updates the screen model.
   detach() {
     this.attached = false;
+    clearTimeout(this.gatherTimer);
+    this.gatherTimer = undefined;
+    this.gathered = '';
     this.outstanding = 0;
     clearTimeout(this.ackTimer);
     if (this.paused && !this.closing && !this.exited) {
@@ -263,6 +288,7 @@ export class NativeTerminal {
   }
   close() {
     if (this.exited || this.closing) return this.closed;
+    this.flush();
     this.closing = true;
     clearTimeout(this.ackTimer);
     if (this.paused) this.process.resume();

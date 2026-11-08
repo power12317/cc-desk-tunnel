@@ -1,6 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 export type AccessKey = { id: string; token: string };
+// Preserve legacy single-space device paths while separating all configured spaces.
+export const spaceDeviceId = (space: string, device: string) =>
+  space === 'default' ? device : `${space}.${device}`;
 const digest = (value: string) => createHash('sha256').update(value).digest();
 
 // IDs are administrator assigned and survive credential rotation. Neither tokens nor device IDs are owners.

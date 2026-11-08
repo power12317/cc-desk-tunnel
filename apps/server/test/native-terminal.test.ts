@@ -3,9 +3,12 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { NativeTerminal, terminalArguments, terminalEnvironment } from '../src/native-terminal.ts';
 import { completeOnboarding } from '../src/native-onboarding.ts';
+import { nativeContext } from '../src/claude.ts';
+import { SessionStore } from '../src/store.ts';
 import { NativeLogin, parseAccountStatus } from '../src/native-account.ts';
 import type { TerminalSpawner } from '../src/native-terminal.ts';
 import type { Session } from '@cc-desk-tunnel/protocol';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -91,6 +94,9 @@ test('a terminal that keeps running shows its current screen to a client that at
   let detached = 0;
   const f = fixture({ detached: () => detached++ });
   f.data('\x1b[?1049h\x1b[>1u第一屏');
+  // A small write is gathered for a few milliseconds before it goes.
+  assert.equal(f.output.length, 0);
+  await delay(20);
   f.terminal.detach();
   f.data('\r\n看不到的时候');
   assert.deepEqual(
@@ -105,7 +111,9 @@ test('a terminal that keeps running shows its current screen to a client that at
   assert.ok(snapshot.text.includes('第一屏') && snapshot.text.includes('看不到的时候'));
   assert.ok(snapshot.text.includes('\x1b[>1u'));
   f.data('之后');
-  assert.equal(f.output.at(-1)!.text, '之后');
+  f.data('，再之后');
+  await delay(20);
+  assert.equal(f.output.at(-1)!.text, '之后，再之后');
   // Acknowledgments of what was sent before an attach may still come; they do not fail the terminal.
   f.terminal.acknowledge(10 ** 6);
   assert.equal(f.terminal.outstanding, 0);
@@ -113,50 +121,58 @@ test('a terminal that keeps running shows its current screen to a client that at
   await f.terminal.close();
 });
 
-test('control terminal launches the official CLI directly with remote guidance and no shell, MCP or bypass', () => {
+test('a terminal launches the official CLI directly with remote guidance and no shell, MCP or bypass', () => {
+  const own = {
+    resume: true,
+    settingsPath: '/t.json',
+    execution: { platform: 'win32' as const, shells: ['pwsh' as const] },
+  };
   const args = terminalArguments(
     { executable: '/native/claude', model: 'provider', settingsPath: '/private/provider.json' },
-    { projectPath: 'D:\\项目', permissionMode: 'auto', model: null, effort: 'high' } as Session,
+    {
+      id: '11111111-2222-4333-8444-555555555555',
+      projectPath: 'D:\\项目',
+      permissionMode: 'auto',
+      model: null,
+      effort: 'high',
+    } as Session,
     { configPath: '/private/ssh.conf' },
+    own,
   );
   assert.ok(args.includes('--append-system-prompt'));
   assert.ok(args.some((arg) => arg.includes('D:\\项目')));
+  assert.ok(args.some((arg) => arg.includes('ssh device-pwsh')));
   assert.ok(args.includes('provider'));
   assert.ok(args.includes('high'));
-  assert.ok(!args.includes('--resume') && !args.includes('--session-id'));
   assert.ok(
     !args.some((arg) => arg.includes('bypass') || arg.includes('mcp') || arg.includes('sdk-ts')),
   );
-  assert.equal(
-    terminalArguments(
+  const mode = (permissionMode: Session['permissionMode']) => {
+    const launched = terminalArguments(
       { executable: 'claude' },
-      { projectPath: 'D:\\test', permissionMode: 'default' } as Session,
+      { id: 's', projectPath: 'D:\\test', permissionMode } as Session,
       { configPath: '/ssh' },
-    )[1],
-    'manual',
-  );
-  assert.equal(
-    terminalArguments(
-      { executable: 'claude' },
-      { projectPath: 'D:\\test', permissionMode: 'bypassPermissions' } as Session,
-      { configPath: '/ssh' },
-    )[1],
-    'bypassPermissions',
-  );
+      own,
+    );
+    return launched[launched.indexOf('--permission-mode') + 1];
+  };
+  assert.equal(mode('default'), 'manual');
+  assert.equal(mode('bypassPermissions'), 'bypassPermissions');
 });
 
-test('a terminal that continues its session resumes or creates it under the session ID, with its own settings', () => {
+test('a terminal resumes its session or creates it under the session ID, with its own settings', () => {
   const session = {
     id: '11111111-2222-4333-8444-555555555555',
     projectPath: 'D:\\test',
     permissionMode: 'auto',
   } as Session;
   const options = { executable: 'claude', settingsPath: '/private/provider.json' };
+  const execution = { platform: 'win32' as const, shells: ['pwsh' as const] };
   const resumed = terminalArguments(
     options,
     session,
     { configPath: '/ssh' },
-    { resume: true, settingsPath: '/t.json' },
+    { resume: true, settingsPath: '/t.json', execution },
   );
   assert.deepEqual(resumed.slice(0, 2), ['--resume', session.id]);
   assert.deepEqual(resumed.slice(-2), ['--settings', '/t.json']);
@@ -164,6 +180,7 @@ test('a terminal that continues its session resumes or creates it under the sess
   const created = terminalArguments(options, session, undefined, {
     resume: false,
     settingsPath: '/t.json',
+    execution,
   });
   assert.deepEqual(created.slice(0, 2), ['--session-id', session.id]);
 });
@@ -174,6 +191,19 @@ test('a terminal never passes for an SDK process, whatever the service inherited
     { CLAUDE_CODE_ENTRYPOINT: 'sdk-ts', CLAUDE_AGENT_SDK_CLIENT_APP: 'x', LANG: 'C.UTF-8' },
   );
   assert.deepEqual(Object.keys(env).sort(), ['LANG', 'TERM']);
+});
+
+test("a terminal's CLI finds the session's ssh before the service's", () => {
+  const ssh = { configPath: '/data/session-ssh/s/config', bin: '/data/session-ssh/s/bin' };
+  const env = terminalEnvironment({ executable: 'claude' }, { PATH: '/usr/bin' }, ssh);
+  assert.equal(
+    env.PATH,
+    `/data/session-ssh/s/bin${process.platform === 'win32' ? ';' : ':'}/usr/bin`,
+  );
+  assert.equal(
+    terminalEnvironment({ executable: 'claude' }, { PATH: '/usr/bin' }).PATH,
+    '/usr/bin',
+  );
 });
 
 test('terminal provider environment stays inside the child process and does not mutate the proxy', (t) => {
@@ -288,4 +318,41 @@ test('official sign-in: the link is read from the command output, the pasted cod
     loggedIn: false,
     authMethod: 'none',
   });
+});
+
+// A long terminal fills the page of history a client opens the session with, leaving out what a chat run said of
+// the native session before it; the terminal says it again as it ends, or compacting would not be offered.
+test('a terminal that ends says the native session is on record, in the page a client opens the session with', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'cc-desk-tunnel-context-'));
+  const store = new SessionStore(directory);
+  t.after(() => {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const session = store.create(randomUUID(), '会话', 'D:\\项目', {
+    id: randomUUID(),
+    name: '台式机',
+  });
+  const info = {
+    sessionId: session.id,
+    summary: '',
+    lastModified: Date.parse('2026-11-04T08:00:00Z'),
+  };
+  store.append(session.id, randomUUID(), nativeContext(session.id, info as never));
+  const terminal = randomUUID();
+  for (let index = 0; index < 1200; index++)
+    store.append(session.id, terminal, { type: 'native.notice', text: `第 ${index} 行` });
+  const opened = () =>
+    store
+      .history(session.id, randomUUID())
+      .events.filter(({ payload }) => payload.type === 'native.context');
+  assert.equal(opened().length, 0);
+  store.append(session.id, randomUUID(), nativeContext(session.id, info as never));
+  assert.deepEqual(opened().at(-1)?.payload, {
+    type: 'native.context',
+    nativeSessionId: session.id,
+    persisted: true,
+    updatedAt: '2026-11-04T08:00:00.000Z',
+  });
+  assert.equal(nativeContext(session.id, undefined).persisted, false);
 });
