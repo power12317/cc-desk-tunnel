@@ -4,13 +4,13 @@
 
 ## 本体与外层
 
-本项目按固定版本从官方 npm 安装 `@anthropic-ai/claude-code`（当前 2.1.293）。不改写 CLI、替换内部工具或注入代码；自动与手动审批均交给原生处理。
+本项目按固定版本从官方 npm 安装 `@anthropic-ai/claude-code`（当前 2.1.321）。不改写 CLI、替换内部工具或注入代码；自动与手动审批均交给原生处理。
 
-外层采用官方 Agent SDK 0.3.286，指定 `pathToClaudeCodeExecutable`，经官方双向 stream-json / stdio 控制接口传递用户输入、公开事件、审批与取消。SDK 自身使用真实 `CLAUDE_CODE_ENTRYPOINT=sdk-ts`、版本标记与 `--permission-prompt-tool stdio`；这是原生 stdio 请求 / 回复入口，不是 MCP 工具。没有伪装成交互式终端，也没有覆盖官方标记。
+外层采用官方 Agent SDK 0.3.321，指定 `pathToClaudeCodeExecutable`，经官方双向 stream-json / stdio 控制接口传递用户输入、公开事件、审批与取消。SDK 自身使用真实 `CLAUDE_CODE_ENTRYPOINT=sdk-ts`、版本标记与 `--permission-prompt-tool stdio`；这是原生 stdio 请求 / 回复入口，不是 MCP 工具。没有伪装成交互式终端，也没有覆盖官方标记。
 
 模型列表来自 CLI 初始化，桌面端不维护型号名单。CLI 按账号和提供方使用官方动态目录或内置目录；SDK 的 `supportedModels()` 返回初始化快照。空闲时“刷新模型列表”启动新的 CLI 读取状态。动态目录可带来新型号，内置目录和能力支持仍随 CLI 版本更新。
 
-代理有意变化限于外层：稳定 cwd / session ID、Windows SSH 提示词、用户选择的审批模式、可选的提供方 settings、公开增量输出、思考摘要显示（`--thinking-display summarized`）和官方持久化 / 恢复。不再额外设置禁用遥测 / 自动更新的变量，不默认限制任务轮数。服务读完自身配置后即从进程环境删除 `PROXY_*` / `FRPS_*` 与四个服务专用的 `CLAUDE_*` 变量，原生 CLI、其 shell 与控制终端继承到的只有宿主环境本身（容器内为 `HOME`、`PATH` 等），不含代理 token 或部署配置；用户有意放进环境的其他变量原样保留。这只避免无意带出：CLI 与服务同属一个 Linux 用户，配置文件仍可被读取，不构成多用户隔离。对“内层完全不变”的工程解释是同一原生可执行与 agent 引擎，不是声称 headless / SDK 和终端 TTY 环境或未公开服务端判断逐项相同。
+代理有意变化限于外层：稳定 cwd / session ID、Windows SSH 提示词、用户选择的审批模式、可选的提供方 settings、公开增量输出、思考摘要显示（`--thinking-display summarized`）和官方持久化 / 恢复。不设置禁用遥测的变量，不默认限制任务轮数。自动更新关闭（`DISABLE_AUTOUPDATER=1`）：CLI 版本随服务端发布固定，交互式 CLI 不再在 ccdt 里提示更新、也不再自己执行 `npm install -g`。服务读完自身配置后即从进程环境删除 `PROXY_*` / `FRPS_*` 与四个服务专用的 `CLAUDE_*` 变量，原生 CLI、其 shell 与控制终端继承到的只有宿主环境本身（容器内为 `HOME`、`PATH` 等），不含代理 token 或部署配置；用户有意放进环境的其他变量原样保留。这只避免无意带出：CLI 与服务同属一个 Linux 用户，配置文件仍可被读取，不构成多用户隔离。对“内层完全不变”的工程解释是同一原生可执行与 agent 引擎，不是声称 headless / SDK 和终端 TTY 环境或未公开服务端判断逐项相同。
 
 后台任务（后台 Bash 命令、子代理）活在 CLI 进程里，任务结束时 CLI 自己开始下一轮。一轮结束时若还有后台任务，服务端不关闭 CLI：运行状态改为“等待后台任务”，界面把这一轮视为已完成，列出任务并可逐个结束，期间可以继续发消息。任务结束后 CLI 开始的那一轮照常显示；任务全部结束且没有新的一轮时运行结束。停止运行会结束 CLI，后台任务随之终止。任务列表取自 SDK 的 `background_tasks_changed` 消息，不计标记为 ambient 的任务；结束单个任务用 SDK 的 `stopTask`。
 
@@ -45,6 +45,8 @@ Claude Code 原生存储是模型会话上下文的唯一权威，包含原生�
 
 - 每个代理会话绑定同一个 native session ID。Linux cwd 按项目分配：一台设备上的一个项目目录对应 `PROXY_DATA_DIR/native/<root>/`，该项目的会话共用它，如同在本机项目目录里使用 Claude Code，原生的会话历史、自动记忆和项目级设置因此按项目共享。没有项目的普通会话各有自己的文件夹，也就各有一个目录。对应关系记在 `sessions.sqlite` 的 `native_roots` 表里，项目路径按 Windows 不区分大小写、两种分隔符等同的规则比较；会话记下自己的 `nativeRoot`。按项目分配之前建立的会话没有记下它，仍在 `native/<会话 ID>/`，照常恢复，不迁移。
 - 首轮 `sessionId`，后续 `resume`；显式 `persistSession: true`。即使每轮启动新 CLI 进程，原生上下文仍由同一 session 恢复。
+- 远端工作区的聊天和 `ccdt` 原生终端统一使用当前追加系统提示词：聊天设置 `snapshot: false`，终端传 `--system-prompt-snapshot off`。这关闭的是 CLI 的旧系统提示词快照复用，API 提示缓存仍按实际请求前缀工作；追加正文不含连接端口、构建时间或内部内容摘要，同一话题和规则下保持一致。CLI 自身提示词、工具或模型变化仍可能影响缓存命中。
+- 追加规则实际变化时，已有话题在下一次正常提交消息时自动收到一次升级上下文，明确覆盖历史 SSH 调用方式；无需用户手动输入纠正文本。规则状态保存在数据目录的 `prompt-policy/<会话 ID>/`，打开话题不消耗通知；SDK 收到成功结果、或终端读到新保存的回答后才确认，失败和中断后可重试。主系统提示词格式保留，终端与聊天共用相同基线，设备和目录变化仍通过消息提醒。不修改 Claude Code 私有历史，不自动压缩或重放命令。已有终端进程的重新附着不会重启 CLI；新启动的 CLI 才应用新的启动选项。
 - 恢复前通过官方 `getSessionInfo` 检查原生记录存在；缺失则明确失败，不静默另开会话，不用代理事件假装恢复。
 - 运行结束通过官方接口确认记录已保存，并同步保存状态到 GUI。压缩由 CLI 执行，客户端只展示实际公开的压缩 / 状态事件。
 - SSH 配置里一台设备的每种 shell 一个主机名，另有 `device`。`device` 原样执行一条命令行（Windows 上由 cmd.exe 解析），scp / sftp 也用它；`device-pwsh`、`device-bash`（Windows 上的 Git Bash）、`device-zsh` 等是同一台设备加上一条固定的 `RemoteCommand`，把标准输入整段当作那种 shell 的脚本执行，UTF-8、保留退出码。提示词让 Claude 按脚本所用的 shell 把它用 here-document 送给对应的主机，脚本不经过任何一层命令行，不需要转义或编码，也没有长度限制；偏好的 shell 只是提示词里的一句话，两种都能用。就绪探测走设备一定有的那种 shell。PowerShell 自带的 `-Command -` 与 `-File -` 逐行处理标准输入，跨行的块会丢失，所以 `device-pwsh` 先读完整段再执行；Git Bash 前先把命令共用的无窗口控制台切到 UTF-8，脚本调用的 cmd、ping 等 Windows 程序才不按系统代码页（中文系统是 GBK）输出。

@@ -14,6 +14,9 @@ const programDir = process.env.PROXY_PROGRAM_DIR;
 if (native) prepareNativePty();
 if (native && process.platform === 'linux') removeFrpLeftovers();
 clearServiceVariables(process.env);
+// The CLI is the version this release was built and tested with (see scripts/install-linux.sh). Left to itself, an
+// interactive CLI could otherwise replace the managed copy. Native hosts keep their installed CLI update policy.
+if (native && options.claude?.managedRuntime) process.env.DISABLE_AUTOUPDATER = '1';
 // What a process that did not get to close left of its connections, the doors of their devices and its terminals.
 if (native)
   for (const name of ['connections', 'devices', 'terminals'])

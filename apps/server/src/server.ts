@@ -59,8 +59,9 @@ import {
   prepareNativeDirectory,
   quotas,
   readNativeStatus,
+  remotePrompt,
 } from './claude.ts';
-import type { ClaudeOptions } from './claude.ts';
+import type { ClaudeOptions, Unanswered } from './claude.ts';
 import { ClientReleases } from './client-release.ts';
 import { DomainError } from './errors.ts';
 import type { NativeLogin } from './native-account.ts';
@@ -71,6 +72,11 @@ import { completeOnboarding } from './native-onboarding.ts';
 import { readNativeSettings, updateNativeSettings } from './native-settings.ts';
 import { readInstructions, writeInstructions } from './native-instructions.ts';
 import type { NativeTerminal } from './native-terminal.ts';
+import {
+  WorkspacePromptPolicy,
+  upgradeNotice,
+  requirePromptSnapshotControl,
+} from './prompt-policy.ts';
 import {
   statusLineContext,
   terminalActivity,
@@ -129,7 +135,12 @@ export type Run = {
   toolFinished: boolean;
   approvalId?: string;
   decide?: (allowed: boolean, answers?: Record<string, string>) => void;
-  approvals: Map<string, (allowed: boolean, answers?: Record<string, string>) => void>;
+  approvals: Map<
+    string,
+    (allowed: boolean, answers?: Record<string, string>, unanswered?: Unanswered) => void
+  >;
+  // The approvals that are Claude's questions, answered or left unanswered rather than allowed or denied.
+  questions: Set<string>;
   // Approvals and questions answered already: a second answer, from another window or computer, came late.
   answered: Set<string>;
   cancelReason?: string;
@@ -151,6 +162,7 @@ type Terminal = {
   owner?: Peer;
   device: string;
   process?: NativeTerminal;
+  promptPolicy?: WorkspacePromptPolicy;
   idle?: ReturnType<typeof setTimeout>;
   // How the terminal continues its session: the native session's messages already recorded and the last of them, its
   // own files and how far its hooks were read, what its CLI was last doing, the time of the last of its turns' events
@@ -537,20 +549,23 @@ export function createProxyServer(options: ServerOptions) {
     broadcast({ type: 'session.event', event }, sessionId);
     if (payload.type === 'native.metrics' && payload.cacheTtl)
       compactions.arm(sessionId, Date.parse(event.createdAt), payload);
-    else if (payload.type === 'message.user') compactions.cancel(sessionId);
+    else if (payload.type === 'message.user' || payload.type === 'native.compact')
+      compactions.cancel(sessionId);
     return event;
   }
   // Each session's last turn sets when it is compacted while idle, as after the service starts or the setting changes.
   function armCompactions() {
     if (!compactions.settings.enabled) return;
-    for (const session of store.list()) {
-      const turn = !session.activeRun && store.lastCachedTurn(session.id);
-      if (turn) compactions.arm(session.id, turn.endedAt, turn.metrics);
-    }
+    for (const session of store.list()) if (!session.activeRun) armCompaction(session.id);
+  }
+  function armCompaction(sessionId: string) {
+    const turn = store.lastCachedTurn(sessionId);
+    if (turn) compactions.arm(sessionId, turn.endedAt, turn.metrics);
   }
   // Compacts an idle session before its prompt cache lapses, as the compact button does; see idle-compaction.ts. It
-  // runs here whether or not a window or the session's computer is there. A session that runs, or that a terminal
-  // holds, is left alone: either keeps its cache current.
+  // runs here whether or not a window or the session's computer is there. A session that runs is left alone, and so
+  // is one a terminal holds: the terminal's CLI compacts it by the same setting (see `terminalSettings`), and when the
+  // terminal ends first, its last turn is looked at again.
   function compactIdle(sessionId: string) {
     if (closing || !options.claude) return;
     try {
@@ -678,6 +693,20 @@ export function createProxyServer(options: ServerOptions) {
   function nativeRoot(sessionId: string) {
     return store.get(sessionId).session.nativeRoot ?? sessionId;
   }
+  function workspacePolicy(sessionId: string, resume: boolean) {
+    const { session } = store.get(sessionId);
+    const said = store.promptValues(sessionId);
+    return new WorkspacePromptPolicy(
+      store.directory,
+      sessionId,
+      remotePrompt(said.projectPath, sessionId, said.execution),
+      upgradeNotice(
+        session.projectPath,
+        store.execution(session.device?.id, platformOf(session.device), store.spaceOf(sessionId)),
+      ),
+      resume,
+    );
+  }
   async function native(run: Run) {
     try {
       const { session } = store.get(run.sessionId);
@@ -716,14 +745,19 @@ export function createProxyServer(options: ServerOptions) {
         resume: store.hasNativeContext(run.sessionId),
         signal: run.controller.signal,
         ssh,
+        promptPolicy: ssh
+          ? workspacePolicy(run.sessionId, store.hasNativeContext(run.sessionId))
+          : undefined,
         emit: (event) => emit(run, event),
         approve: (toolId, waiting) => {
           if (run.controller.signal.aborted) return Promise.resolve({ allowed: false });
           const approvalId = randomUUID();
+          if (waiting === 'question') run.questions.add(approvalId);
           return new Promise((resolve) => {
-            run.approvals.set(approvalId, (allowed, answers) => {
+            run.approvals.set(approvalId, (allowed, answers, unanswered) => {
+              run.questions.delete(approvalId);
               emit(run, { type: 'approval.resolved', approvalId, allowed });
-              resolve({ allowed, answers });
+              resolve({ allowed, answers, unanswered });
             });
             emit(run, { type: 'approval.requested', approvalId, toolId });
             emit(run, {
@@ -909,6 +943,16 @@ export function createProxyServer(options: ServerOptions) {
     };
     terminals.set(current.sessionId, current);
     try {
+      if (ssh) {
+        try {
+          await requirePromptSnapshotControl(options.claude.executable);
+        } catch {
+          throw new DomainError(
+            'terminal_prompt_unsupported',
+            '服务端 Claude CLI 未提供 --system-prompt-snapshot 选项，无法确保旧话题使用当前规则。请检查配置中的 Claude 可执行文件及其 --help 输出。',
+          );
+        }
+      }
       const { NativeTerminal, terminalArguments, terminalEnvironment } =
         await import('./native-terminal.ts');
       const cwd = prepareNativeDirectory(options.claude, store.directory, nativeRoot(session.id));
@@ -921,6 +965,10 @@ export function createProxyServer(options: ServerOptions) {
       // not clear it away (see the end below), makes the CLI refuse the session's ID as one in use.
       if (!resume && !messages.length)
         await deleteSession(session.id, { dir: cwd }).catch(() => {});
+      if (ssh) {
+        current.promptPolicy = workspacePolicy(session.id, resume || messages.length > 0);
+        current.promptPolicy.queue(store.notice(session.id, false));
+      }
       current.continued.known = new Set(messages.map((message) => message.uuid));
       current.continued.last = messages.at(-1)?.uuid;
       mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -929,6 +977,9 @@ export function createProxyServer(options: ServerOptions) {
         current.continued.hooksPath,
         options.claude.settingsPath,
         current.continued.statusPath,
+        undefined,
+        compactions.settings,
+        current.promptPolicy?.terminalHook(),
       );
       if (closing || peer.socket.readyState !== WebSocket.OPEN)
         throw new Error('Connection closed');
@@ -943,12 +994,14 @@ export function createProxyServer(options: ServerOptions) {
             platformOf(session.device),
             store.spaceOf(session.id),
           ),
+          prompt: current.promptPolicy?.append,
         }),
         {
           cwd,
           cols: command.cols,
           rows: command.rows,
           env: terminalEnvironment(options.claude, process.env, reach),
+          status: (activity) => void heardTerminal(current, false, activity),
           screen: {
             detached: () => {
               if (current.owner)
@@ -979,6 +1032,7 @@ export function createProxyServer(options: ServerOptions) {
           unwatchFile(statusPath);
           if (current.continued.record) unwatchFile(current.continued.record);
           await heardTerminal(current, true);
+          current.promptPolicy?.close();
           // A terminal that said nothing leaves no native session: its record, with nothing in it, would keep the
           // session's ID from a chat run or the next terminal, which the CLI refuses it to as one in use.
           if (current.continued.empty)
@@ -1010,6 +1064,8 @@ export function createProxyServer(options: ServerOptions) {
               exitCode,
             });
           terminals.delete(current.sessionId);
+          // What the terminal's CLI did not compact before it ended is the service's again.
+          if (compactions.settings.enabled) armCompaction(current.sessionId);
         },
       );
       store.append(command.sessionId, current.id, {
@@ -1023,14 +1079,16 @@ export function createProxyServer(options: ServerOptions) {
       watchFile(current.continued.hooksPath, { interval: 500 }, () => void heardTerminal(current));
       watchFile(current.continued.statusPath, { interval: 1000 }, () => terminalQuota(current));
       send(peer, { type: 'terminal.opened', sessionId: command.sessionId, terminalId: current.id });
-    } catch {
+    } catch (error) {
       await current.process?.close();
+      current.promptPolicy?.close();
       if (!current.process) {
         rmSync(current.continued.settingsPath, { force: true });
         rmSync(current.continued.hooksPath, { force: true });
         rmSync(current.continued.statusPath, { force: true });
       }
       if (terminals.get(current.sessionId) === current) terminals.delete(current.sessionId);
+      if (error instanceof DomainError) throw error;
       throw new DomainError('terminal_failed', '原生终端启动失败，请检查服务端 PTY 组件与 CLI。');
     }
   }
@@ -1061,8 +1119,10 @@ export function createProxyServer(options: ServerOptions) {
   }
   // What the hooks of a terminal that continues its session wrote since they were last read: the session shows what
   // its CLI is doing, and what a turn added is read whole once it ended (see `importTerminal`). Reads go one at a time,
-  // and the last, when the terminal `ended`, records what is left.
-  function heardTerminal(terminal: Terminal, ended = false, interrupted = false) {
+  // and the last, when the terminal `ended`, records what is left. `told` is what the CLI is doing as it says so itself
+  // (see `programStatus`), or as a key that interrupts it implies; it holds when no hook came since. A turn the user
+  // stops runs no hook, so its end is known only this way.
+  function heardTerminal(terminal: Terminal, ended = false, told?: TerminalActivity) {
     const { continued } = terminal;
     const task = continued.heard
       .then(async () => {
@@ -1076,9 +1136,9 @@ export function createProxyServer(options: ServerOptions) {
             followRecord(terminal, hook.transcript_path);
           activity = terminalActivity(hook) ?? activity;
         }
-        interrupted &&= !hooks.length && continued.activity === 'working';
-        if (interrupted) activity = 'idle';
-        if (ended || interrupted || hooks.some((hook) => terminalActivity(hook) === 'idle')) {
+        if (told && !hooks.length) activity = told;
+        const stopped = told === 'idle' && !hooks.length && continued.activity !== 'idle';
+        if (ended || stopped || hooks.some((hook) => terminalActivity(hook) === 'idle')) {
           await importTerminal(terminal);
           terminalTurnEnded(terminal);
         }
@@ -1199,7 +1259,7 @@ export function createProxyServer(options: ServerOptions) {
     const { offset } = continued;
     setTimeout(() => {
       if (continued.activity === 'working' && continued.offset === offset)
-        void heardTerminal(terminal, false, true);
+        void heardTerminal(terminal, false, 'idle');
     }, 2000).unref();
   }
   // What a terminal that continued its session added to the native session since it was last looked at, recorded in
@@ -1213,6 +1273,20 @@ export function createProxyServer(options: ServerOptions) {
     const dir = nativeDirectory(store.directory, nativeRoot(sessionId));
     const messages = await getSessionMessages(sessionId, { dir, includeSystemMessages: true });
     continued.empty = !messages.length;
+    if (
+      !continued.elsewhere &&
+      messages.some((message) => {
+        const answer = message as typeof message & { isApiErrorMessage?: boolean };
+        return (
+          !known.has(message.uuid) &&
+          message.type === 'assistant' &&
+          !answer.isApiErrorMessage &&
+          (message.message as { model?: string })?.model !== '<synthetic>'
+        );
+      }) &&
+      terminal.promptPolicy?.acknowledge()
+    )
+      store.notice(sessionId);
     if (messages.length && !store.hasNativeContext(sessionId)) {
       const answer = messages.findLast((message) => message.type === 'assistant')?.message as
         { model?: unknown } | undefined;
@@ -1269,6 +1343,10 @@ export function createProxyServer(options: ServerOptions) {
         const owner = store.spaceOf(command.sessionId);
         store.delete(command.sessionId);
         rmSync(sessionSshPath(store.directory, command.sessionId), {
+          recursive: true,
+          force: true,
+        });
+        rmSync(join(store.directory, 'prompt-policy', command.sessionId), {
           recursive: true,
           force: true,
         });
@@ -1384,6 +1462,9 @@ export function createProxyServer(options: ServerOptions) {
       peer?.subscriptions.add(command.sessionId);
       emit(active, { type: 'message.user', messageId: command.requestId, text, scenario });
       active.input.submit(command.requestId, store.notice(command.sessionId) + text);
+      // A message sent while Claude waits on its question is the user's answer in the chat instead.
+      for (const approvalId of [...active.questions])
+        answerApproval(active, approvalId, false, undefined, 'replied_in_chat', peer?.id);
       return;
     }
     if (options.claude && mutations.size)
@@ -1403,6 +1484,7 @@ export function createProxyServer(options: ServerOptions) {
       controller: new AbortController(),
       toolFinished: false,
       approvals: new Map(),
+      questions: new Set(),
       answered: new Set(),
       controls: {},
       stats: inOrder(),
@@ -1476,13 +1558,19 @@ export function createProxyServer(options: ServerOptions) {
       return;
     }
     if (options.claude) {
-      const decide = run.approvals.get(command.approvalId);
-      if (!decide) throw new DomainError('approval_inactive', '审批已失效。');
-      run.approvals.delete(command.approvalId);
-      run.answered.add(command.approvalId);
-      decide(command.allowed, command.answers);
-      if (!run.approvals.size)
-        emit(run, { type: 'run.status', status: 'running', connectionId: peer.id });
+      // A question the user declines is one they skipped.
+      const skipped = !command.allowed && run.questions.has(command.approvalId);
+      if (
+        !answerApproval(
+          run,
+          command.approvalId,
+          command.allowed,
+          command.answers,
+          skipped ? 'skipped' : undefined,
+          peer.id,
+        )
+      )
+        throw new DomainError('approval_inactive', '审批已失效。');
       return;
     }
     if (!run.decide || run.approvalId !== command.approvalId)
@@ -1491,6 +1579,23 @@ export function createProxyServer(options: ServerOptions) {
     run.decide = undefined;
     run.answered.add(command.approvalId);
     decide(command.allowed, command.answers);
+  }
+
+  function answerApproval(
+    run: Run,
+    approvalId: string,
+    allowed: boolean,
+    answers: Record<string, string> | undefined,
+    unanswered: Unanswered | undefined,
+    connectionId = run.connectionId,
+  ) {
+    const decide = run.approvals.get(approvalId);
+    if (!decide) return false;
+    run.approvals.delete(approvalId);
+    run.answered.add(approvalId);
+    decide(allowed, answers, unanswered);
+    if (!run.approvals.size) emit(run, { type: 'run.status', status: 'running', connectionId });
+    return true;
   }
 
   // Resolves to the session ID carried in the response frame; account and usage commands have none.

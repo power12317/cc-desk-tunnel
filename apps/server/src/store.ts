@@ -421,11 +421,12 @@ export class SessionStore {
     const payload = row ? (JSON.parse(String(row.data)) as SessionEvent).payload : undefined;
     return payload?.type === 'native.metrics' ? payload : null;
   }
-  // The figures of the last turn that wrote a prompt cache, and when it ended.
+  // The figures of the last turn that wrote a prompt cache, and when it ended; none once the session was compacted
+  // after it, as a terminal's CLI does by itself while it is idle.
   lastCachedTurn(sessionId: string) {
     const row = this.database
       .prepare(
-        "SELECT data FROM events WHERE session_id = ? AND json_extract(data, '$.payload.type') = 'native.metrics' AND json_extract(data, '$.payload.cacheTtl') IS NOT NULL ORDER BY sequence DESC LIMIT 1",
+        "SELECT data FROM events WHERE session_id = ? AND json_extract(data, '$.payload.type') IN ('native.metrics', 'native.compact') AND (json_extract(data, '$.payload.type') = 'native.compact' OR json_extract(data, '$.payload.cacheTtl') IS NOT NULL) ORDER BY sequence DESC LIMIT 1",
       )
       .get(sessionId);
     const event = row ? (JSON.parse(String(row.data)) as SessionEvent) : undefined;
@@ -839,7 +840,7 @@ export class SessionStore {
   // The text that tells Claude what its system prompt no longer has right, to go in front of the user's next
   // message: a project directory or a computer other than the one it knows, from the prompt or from an earlier
   // notice, or other shells, or another one the user prefers. It is given out once.
-  notice(sessionId: string) {
+  notice(sessionId: string, commit = true) {
     const { session } = this.get(sessionId);
     const said = session.prompt;
     if (!said || said.compacted) return '';
@@ -853,14 +854,15 @@ export class SessionStore {
     const samePreference = sameShells && known.shell === execution.shell;
     if (known.projectPath === session.projectPath && known.device === device && samePreference)
       return '';
-    said.told = {
-      projectPath: session.projectPath,
-      device,
-      platform,
-      shells: execution.shells,
-      ...(execution.shell ? { shell: execution.shell } : {}),
-    };
-    this.save(session);
+    if (commit)
+      said.told = {
+        projectPath: session.projectPath,
+        device,
+        platform,
+        shells: execution.shells,
+        ...(execution.shell ? { shell: execution.shell } : {}),
+      };
+    if (commit) this.save(session);
     const terms = deviceTerms(execution, session.projectPath);
     const paths = `The project directory is now ${JSON.stringify(session.projectPath)} (it was ${JSON.stringify(known.projectPath)}).`;
     // A new directory must update the required first script line even when the shell stays the same.

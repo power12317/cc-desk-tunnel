@@ -482,8 +482,8 @@ test('browser and phone cookies inherit space; changing login revokes the prior 
     phone = await browser(cookieA),
     cookieB = await login(b),
     foreign = await browser(cookieB);
-  assert.equal(phone.ready.version, '0.3.13');
-  assert.equal(phone.ready.protocolVersion, 24);
+  assert.equal(phone.ready.version, '0.3.14');
+  assert.equal(phone.ready.protocolVersion, 25);
   assert.equal(phone.ready.sessions[0].id, id);
   assert.equal(foreign.ready.sessions.length, 0);
   const mine = await a1.data({ type: 'web.settings.get' }, 'web.settings.state');

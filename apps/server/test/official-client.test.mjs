@@ -16,7 +16,7 @@ import { defaultCertificate } from './fixtures/web-certificates.ts';
 import { openProxyBridge } from '../../desktop/electron/proxy-bridge.mjs';
 
 test(
-  'official 0.3.13 bridge + protocol 24 + offline SDK + real SSH: shared-space routing, isolation and reconnect',
+  'official 0.3.14 bridge + protocol 25 + offline SDK + real SSH: shared-space routing, isolation and reconnect',
   { skip: process.platform === 'win32', timeout: 60000 },
   async (t) => {
     const directory = mkdtempSync('/tmp/cc-native-spaces-');
@@ -81,8 +81,8 @@ test(
       }
       const ready = await next((m) => m.type === 'ready');
       assert.equal(ready.type, 'ready');
-      assert.equal(PROTOCOL_VERSION, 24);
-      assert.equal(ready.version, '0.3.13');
+      assert.equal(PROTOCOL_VERSION, 25);
+      assert.equal(ready.version, '0.3.14');
       async function request(command) {
         const requestId = randomUUID();
         socket.send(JSON.stringify({ ...command, requestId }));
