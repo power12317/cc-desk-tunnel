@@ -159,23 +159,26 @@ test(
 test('a moved workspace notice is previewed without consuming it and survives an aborted terminal start', (t) => {
   const f = fixture(t);
   const store = new SessionStore(f.directory);
-  t.after(() => store.close());
-  const device = { id: randomUUID(), name: 'Windows' };
-  const session = store.create(randomUUID(), 'old conversation', 'D:\\old', device);
-  store.promptValues(session.id);
-  store.move(session.id, 'D:\\new', device);
-  const preview = store.notice(session.id, false);
-  assert.match(preview, /directory changed/);
-  assert.equal(store.notice(session.id, false), preview);
-  const policy = f.policy(false);
-  policy.queue(preview);
-  policy.close();
-  const retry = f.policy(false);
-  assert.match(retry.offer(f.sessionId).hookSpecificOutput!.additionalContext, /D:\\\\new/);
-  retry.acknowledge();
-  assert.deepEqual(f.policy(false).offer(f.sessionId), {});
-  assert.equal(store.notice(session.id), preview);
-  assert.equal(store.notice(session.id), '');
+  try {
+    const device = { id: randomUUID(), name: 'Windows' };
+    const session = store.create(randomUUID(), 'old conversation', 'D:\\old', device);
+    store.promptValues(session.id);
+    store.move(session.id, 'D:\\new', device);
+    const preview = store.notice(session.id, false);
+    assert.match(preview, /directory changed/);
+    assert.equal(store.notice(session.id, false), preview);
+    const policy = f.policy(false);
+    policy.queue(preview);
+    policy.close();
+    const retry = f.policy(false);
+    assert.match(retry.offer(f.sessionId).hookSpecificOutput!.additionalContext, /D:\\\\new/);
+    retry.acknowledge();
+    assert.deepEqual(f.policy(false).offer(f.sessionId), {});
+    assert.equal(store.notice(session.id), preview);
+    assert.equal(store.notice(session.id), '');
+  } finally {
+    store.close();
+  }
 });
 
 test(
